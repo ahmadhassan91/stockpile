@@ -1,0 +1,224 @@
+"""COLMAP subprocess wrapper and binary file parsers."""
+
+import logging
+import struct
+import subprocess
+from collections import namedtuple
+from pathlib import Path
+
+import numpy as np
+
+from .config import ColmapConfig
+
+logger = logging.getLogger(__name__)
+
+# COLMAP binary format structures
+CameraModel = namedtuple("CameraModel", ["model_id", "model_name", "num_params"])
+
+CAMERA_MODELS = {
+    0: CameraModel(0, "SIMPLE_PINHOLE", 3),
+    1: CameraModel(1, "PINHOLE", 4),
+    2: CameraModel(2, "SIMPLE_RADIAL", 4),
+    3: CameraModel(3, "RADIAL", 5),
+}
+
+
+class ColmapImage:
+    """Parsed COLMAP image entry."""
+    def __init__(self, image_id, qw, qx, qy, qz, tx, ty, tz, camera_id, name, xys, point3d_ids):
+        self.image_id = image_id
+        self.qvec = np.array([qw, qx, qy, qz])
+        self.tvec = np.array([tx, ty, tz])
+        self.camera_id = camera_id
+        self.name = name
+        self.xys = xys  # (N, 2) array of 2D keypoint positions
+        self.point3d_ids = point3d_ids  # (N,) array, -1 if no 3D point
+
+
+class ColmapPoint3D:
+    """Parsed COLMAP 3D point entry."""
+    def __init__(self, point3d_id, xyz, rgb, error, image_ids, point2d_idxs):
+        self.point3d_id = point3d_id
+        self.xyz = xyz
+        self.rgb = rgb
+        self.error = error
+        self.image_ids = image_ids
+        self.point2d_idxs = point2d_idxs
+
+
+def run_colmap_reconstruction(
+    images_dir: Path,
+    workspace_dir: Path,
+    config: ColmapConfig | None = None,
+    progress_callback=None,
+) -> Path:
+    """Run COLMAP automatic_reconstructor and return the sparse model directory."""
+    config = config or ColmapConfig()
+    workspace_dir = Path(workspace_dir)
+    workspace_dir.mkdir(parents=True, exist_ok=True)
+
+    sparse_dir = workspace_dir / "sparse"
+    database_path = workspace_dir / "database.db"
+
+    cmd = [
+        config.colmap_binary,
+        "automatic_reconstructor",
+        "--workspace_path", str(workspace_dir),
+        "--image_path", str(images_dir),
+        "--data_type", "video",
+        "--quality", config.quality,
+        "--single_camera", "1" if config.single_camera else "0",
+        "--dense", "0",  # No dense reconstruction (no CUDA on macOS)
+    ]
+
+    logger.info("Running COLMAP: %s", " ".join(cmd))
+    if progress_callback:
+        progress_callback(0.1)
+
+    try:
+        result = subprocess.run(
+            cmd,
+            capture_output=True,
+            text=True,
+            timeout=1800,  # 30 min timeout
+        )
+
+        if result.returncode != 0:
+            logger.error("COLMAP stdout: %s", result.stdout[-2000:] if result.stdout else "")
+            logger.error("COLMAP stderr: %s", result.stderr[-2000:] if result.stderr else "")
+            raise RuntimeError(f"COLMAP failed with return code {result.returncode}")
+
+        logger.info("COLMAP reconstruction complete")
+
+    except subprocess.TimeoutExpired:
+        raise RuntimeError("COLMAP timed out after 30 minutes")
+
+    if progress_callback:
+        progress_callback(0.8)
+
+    # Find the sparse model (usually in sparse/0/)
+    model_dir = sparse_dir / "0"
+    if not model_dir.exists():
+        # Check for any sub-directory
+        subdirs = sorted(sparse_dir.iterdir()) if sparse_dir.exists() else []
+        if subdirs:
+            model_dir = subdirs[0]
+        else:
+            raise RuntimeError("COLMAP produced no sparse model")
+
+    if progress_callback:
+        progress_callback(1.0)
+
+    return model_dir
+
+
+def export_to_ply(
+    model_dir: Path,
+    output_path: Path,
+    colmap_binary: str = "colmap",
+) -> Path:
+    """Export COLMAP sparse model to PLY file."""
+    output_path = Path(output_path)
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+
+    cmd = [
+        colmap_binary,
+        "model_converter",
+        "--input_path", str(model_dir),
+        "--output_path", str(output_path),
+        "--output_type", "PLY",
+    ]
+
+    result = subprocess.run(cmd, capture_output=True, text=True, timeout=120)
+    if result.returncode != 0:
+        raise RuntimeError(f"PLY export failed: {result.stderr}")
+
+    logger.info("Exported PLY to %s", output_path)
+    return output_path
+
+
+# ─── Binary File Parsers ─────────────────────────────────────────────
+
+
+def read_images_binary(path: Path) -> dict[int, ColmapImage]:
+    """Parse COLMAP images.bin file."""
+    images = {}
+    with open(path, "rb") as f:
+        num_images = struct.unpack("<Q", f.read(8))[0]
+        for _ in range(num_images):
+            # Image header
+            image_id = struct.unpack("<I", f.read(4))[0]
+            qw, qx, qy, qz = struct.unpack("<4d", f.read(32))
+            tx, ty, tz = struct.unpack("<3d", f.read(24))
+            camera_id = struct.unpack("<I", f.read(4))[0]
+
+            # Image name (null-terminated)
+            name_bytes = b""
+            while True:
+                ch = f.read(1)
+                if ch == b"\x00":
+                    break
+                name_bytes += ch
+            name = name_bytes.decode("utf-8")
+
+            # 2D points
+            num_points2d = struct.unpack("<Q", f.read(8))[0]
+            xys = np.zeros((num_points2d, 2), dtype=np.float64)
+            point3d_ids = np.full(num_points2d, -1, dtype=np.int64)
+
+            for j in range(num_points2d):
+                x, y = struct.unpack("<2d", f.read(16))
+                p3d_id = struct.unpack("<q", f.read(8))[0]
+                xys[j] = [x, y]
+                point3d_ids[j] = p3d_id
+
+            images[image_id] = ColmapImage(
+                image_id, qw, qx, qy, qz, tx, ty, tz,
+                camera_id, name, xys, point3d_ids,
+            )
+
+    logger.info("Parsed %d images from images.bin", len(images))
+    return images
+
+
+def read_points3d_binary(path: Path) -> dict[int, ColmapPoint3D]:
+    """Parse COLMAP points3D.bin file."""
+    points = {}
+    with open(path, "rb") as f:
+        num_points = struct.unpack("<Q", f.read(8))[0]
+        for _ in range(num_points):
+            point3d_id = struct.unpack("<Q", f.read(8))[0]
+            xyz = np.array(struct.unpack("<3d", f.read(24)))
+            rgb = np.array(struct.unpack("<3B", f.read(3)), dtype=np.uint8)
+            error = struct.unpack("<d", f.read(8))[0]
+
+            track_length = struct.unpack("<Q", f.read(8))[0]
+            image_ids = np.zeros(track_length, dtype=np.int32)
+            point2d_idxs = np.zeros(track_length, dtype=np.int32)
+            for j in range(track_length):
+                img_id, p2d_idx = struct.unpack("<2I", f.read(8))
+                image_ids[j] = img_id
+                point2d_idxs[j] = p2d_idx
+
+            points[point3d_id] = ColmapPoint3D(
+                point3d_id, xyz, rgb, error, image_ids, point2d_idxs,
+            )
+
+    logger.info("Parsed %d 3D points from points3D.bin", len(points))
+    return points
+
+
+def get_reconstruction_stats(model_dir: Path) -> dict:
+    """Get basic stats about a COLMAP reconstruction."""
+    images = read_images_binary(model_dir / "images.bin")
+    points = read_points3d_binary(model_dir / "points3D.bin")
+
+    all_xyz = np.array([p.xyz for p in points.values()])
+
+    return {
+        "num_images": len(images),
+        "num_points": len(points),
+        "bbox_min": all_xyz.min(axis=0).tolist() if len(all_xyz) > 0 else None,
+        "bbox_max": all_xyz.max(axis=0).tolist() if len(all_xyz) > 0 else None,
+        "mean_reprojection_error": np.mean([p.error for p in points.values()]) if points else None,
+    }

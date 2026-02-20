@@ -1,0 +1,146 @@
+"""Page 2: Pipeline execution with progress tracking."""
+
+import threading
+import time
+from queue import Queue
+
+import streamlit as st
+
+from stockpile.config import PipelineConfig
+from stockpile.pipeline import Pipeline, PipelineResult
+
+import sys
+from pathlib import Path
+sys.path.insert(0, str(Path(__file__).parent.parent))
+from components.session_init import init_session_state
+
+init_session_state()
+st.header("2. Processing")
+
+STAGE_LABELS = {
+    "frame_extraction": "Extracting frames from video",
+    "cone_detection": "Detecting red cones in frames",
+    "colmap_reconstruction": "Running COLMAP 3D reconstruction",
+    "scale_calibration": "Calibrating scale from cones",
+    "ground_plane": "Fitting ground plane & segmenting pile",
+    "volume_computation": "Computing volume",
+    "complete": "Done!",
+}
+
+
+def run_pipeline_thread(video_path: str, config: PipelineConfig, queue: Queue):
+    """Run the pipeline in a background thread, posting progress to queue."""
+    def progress_callback(stage, progress, message=""):
+        queue.put(("progress", stage, progress, message))
+
+    config.progress_callback = progress_callback
+    pipeline = Pipeline(config)
+    result = pipeline.run(video_path)
+    queue.put(("done", result))
+
+
+if st.session_state.get("video_path") is None:
+    st.warning("No video uploaded. Go to the Upload page first.")
+    st.stop()
+
+config = st.session_state.get("pipeline_config", PipelineConfig())
+
+# Apply manual scale override from sidebar
+manual_scale = st.session_state.get("manual_scale_override")
+config.manual_scale_override = manual_scale
+
+# Show current settings
+with st.expander("Current Settings"):
+    st.write(f"- **Material**: {config.material_name} ({config.material_density:.0f} kg/m³)")
+    st.write(f"- **Cone height**: {config.scale_calibration.known_cone_height_m:.2f} m")
+    st.write(f"- **Frame interval**: {config.frame_extraction.interval_sec:.1f}s")
+    st.write(f"- **COLMAP quality**: {config.colmap.quality}")
+    st.write(f"- **Grid resolution**: {config.volume.grid_resolution:.2f} m")
+
+# Run button
+if not st.session_state.get("pipeline_running", False):
+    if st.button("Start Processing", type="primary", use_container_width=True):
+        st.session_state.pipeline_running = True
+        st.session_state.pipeline_result = None
+
+        queue = Queue()
+        st.session_state.progress_queue = queue
+
+        thread = threading.Thread(
+            target=run_pipeline_thread,
+            args=(st.session_state.video_path, config, queue),
+            daemon=True,
+        )
+        thread.start()
+        st.session_state.pipeline_thread = thread
+        st.rerun()
+
+# Progress display
+if st.session_state.get("pipeline_running", False):
+    queue = st.session_state.get("progress_queue")
+    if queue is None:
+        st.session_state.pipeline_running = False
+        st.rerun()
+
+    progress_bar = st.progress(0)
+    status_text = st.empty()
+    stage_text = st.empty()
+
+    # Overall stage tracking
+    stages = list(STAGE_LABELS.keys())
+    current_stage_idx = 0
+
+    while True:
+        # Check for messages
+        try:
+            while not queue.empty():
+                msg = queue.get_nowait()
+                if msg[0] == "progress":
+                    _, stage, progress, message = msg
+                    if stage in stages:
+                        current_stage_idx = stages.index(stage)
+                    overall = (current_stage_idx + progress) / len(stages)
+                    progress_bar.progress(min(overall, 1.0))
+                    stage_label = STAGE_LABELS.get(stage, stage)
+                    status_text.markdown(f"**{stage_label}**")
+                    if message:
+                        stage_text.text(message)
+
+                elif msg[0] == "done":
+                    result = msg[1]
+                    st.session_state.pipeline_result = result
+                    st.session_state.pipeline_running = False
+                    progress_bar.progress(1.0)
+
+                    if result.error:
+                        st.error(f"Pipeline failed: {result.error}")
+                    else:
+                        st.success("Processing complete! Go to the Results page.")
+                    st.rerun()
+
+        except Exception:
+            pass
+
+        # Check if thread is still alive
+        thread = st.session_state.get("pipeline_thread")
+        if thread and not thread.is_alive():
+            if st.session_state.get("pipeline_running"):
+                st.session_state.pipeline_running = False
+                if st.session_state.pipeline_result is None:
+                    st.error("Pipeline thread ended unexpectedly")
+                st.rerun()
+            break
+
+        time.sleep(0.5)
+
+# Show previous result if available
+result = st.session_state.get("pipeline_result")
+if result and not st.session_state.get("pipeline_running"):
+    if result.error:
+        st.error(f"Last run failed at stage '{result.stage}': {result.error}")
+    else:
+        st.success("Processing complete!")
+        col1, col2, col3 = st.columns(3)
+        col1.metric("Frames Extracted", result.num_frames)
+        col2.metric("COLMAP 3D Points", result.num_colmap_points)
+        col3.metric("Pile Points", len(result.pile_cloud.points) if result.pile_cloud else 0)

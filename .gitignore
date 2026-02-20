@@ -1,0 +1,15 @@
+data/
+__pycache__/
+*.pyc
+*.egg-info/
+dist/
+build/
+.eggs/
+*.ply
+*.jpg
+*.jpeg
+*.png
+!tests/fixtures/*
+.streamlit/
+.venv/
+.venv/
