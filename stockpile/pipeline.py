@@ -10,6 +10,7 @@ import open3d as o3d
 
 from .colmap_runner import (
     export_to_ply,
+    read_cameras_binary,
     read_images_binary,
     read_points3d_binary,
     run_colmap_reconstruction,
@@ -125,6 +126,7 @@ class Pipeline:
             result.ply_path = ply_path
 
             # Parse COLMAP binary files
+            cameras = read_cameras_binary(model_dir / "cameras.bin")
             images = read_images_binary(model_dir / "images.bin")
             points3d = read_points3d_binary(model_dir / "points3D.bin")
             result.num_colmap_points = len(points3d)
@@ -143,20 +145,22 @@ class Pipeline:
 
             if self.config.manual_scale_override is not None:
                 scale_factor = self.config.manual_scale_override
-                # Still run cone detection for positions but use manual scale
                 if cone_detections:
-                    calibration = calibrate_scale(
-                        cone_detections, images, points3d,
-                        self.config.scale_calibration,
-                    )
-                    result.calibration = calibration
-                    result.cone_3d_positions = calibration.cone_3d_positions
+                    try:
+                        calibration = calibrate_scale(
+                            cone_detections, images, points3d,
+                            self.config.scale_calibration, cameras,
+                        )
+                        result.calibration = calibration
+                        result.cone_3d_positions = calibration.cone_3d_positions
+                    except Exception:
+                        pass
                 self._report("scale_calibration", 1.0,
                              f"Manual scale override: {scale_factor:.4f} m/unit")
             elif cone_detections:
                 calibration = calibrate_scale(
                     cone_detections, images, points3d,
-                    self.config.scale_calibration,
+                    self.config.scale_calibration, cameras,
                 )
                 result.calibration = calibration
                 result.cone_3d_positions = calibration.cone_3d_positions

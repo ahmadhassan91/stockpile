@@ -41,7 +41,8 @@ class ColmapConfig:
 
 @dataclass
 class ScaleCalibrationConfig:
-    known_cone_height_m: float = 0.45  # Standard 18-inch traffic cone
+    known_cone_height_m: float = 0.75  # Standard 750mm traffic cone
+    assumed_camera_height_m: float = 1.6  # Handheld phone height above ground
     dbscan_eps: float = 0.5  # In COLMAP units, tuned during calibration
     dbscan_min_samples: int = 3
     min_cones_for_confidence: int = 3

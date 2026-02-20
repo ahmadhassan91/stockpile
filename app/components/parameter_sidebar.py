@@ -27,6 +27,10 @@ def render_parameter_sidebar() -> PipelineConfig:
     cone_height = st.sidebar.number_input(
         "Cone height (m)", value=0.75, min_value=0.1, max_value=2.0, step=0.05,
     )
+    camera_height = st.sidebar.number_input(
+        "Camera height (m)", value=1.6, min_value=0.5, max_value=3.0, step=0.1,
+        help="Height of the phone/camera above ground during filming",
+    )
 
     use_manual_scale = st.sidebar.checkbox("Override scale manually", value=False)
     manual_scale = None
@@ -61,6 +65,7 @@ def render_parameter_sidebar() -> PipelineConfig:
         material_name=material if material != "custom" else "custom",
     )
     config.scale_calibration.known_cone_height_m = cone_height
+    config.scale_calibration.assumed_camera_height_m = camera_height
     config.frame_extraction.interval_sec = interval
     config.colmap.quality = quality
     config.volume.grid_resolution = grid_res

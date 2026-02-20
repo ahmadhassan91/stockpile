@@ -20,7 +20,29 @@ CAMERA_MODELS = {
     1: CameraModel(1, "PINHOLE", 4),
     2: CameraModel(2, "SIMPLE_RADIAL", 4),
     3: CameraModel(3, "RADIAL", 5),
+    4: CameraModel(4, "OPENCV", 8),
+    5: CameraModel(5, "OPENCV_FISHEYE", 8),
+    6: CameraModel(6, "FULL_OPENCV", 14),
+    7: CameraModel(7, "FOV", 5),
+    8: CameraModel(8, "SIMPLE_RADIAL_FISHEYE", 4),
+    9: CameraModel(9, "RADIAL_FISHEYE", 5),
+    10: CameraModel(10, "THIN_PRISM_FISHEYE", 12),
 }
+
+
+class ColmapCamera:
+    """Parsed COLMAP camera entry."""
+    def __init__(self, camera_id, model_id, width, height, params):
+        self.camera_id = camera_id
+        self.model_id = model_id
+        self.width = width
+        self.height = height
+        self.params = params  # numpy array of intrinsic parameters
+
+    @property
+    def focal_length(self) -> float:
+        """Get focal length in pixels (first parameter for all models)."""
+        return float(self.params[0])
 
 
 class ColmapImage:
@@ -138,6 +160,27 @@ def export_to_ply(
 
 
 # ─── Binary File Parsers ─────────────────────────────────────────────
+
+
+def read_cameras_binary(path: Path) -> dict[int, ColmapCamera]:
+    """Parse COLMAP cameras.bin file."""
+    cameras = {}
+    with open(path, "rb") as f:
+        num_cameras = struct.unpack("<Q", f.read(8))[0]
+        for _ in range(num_cameras):
+            camera_id = struct.unpack("<I", f.read(4))[0]
+            model_id = struct.unpack("<i", f.read(4))[0]
+            width = struct.unpack("<Q", f.read(8))[0]
+            height = struct.unpack("<Q", f.read(8))[0]
+
+            model = CAMERA_MODELS.get(model_id)
+            num_params = model.num_params if model else 0
+            params = np.array(struct.unpack(f"<{num_params}d", f.read(8 * num_params)))
+
+            cameras[camera_id] = ColmapCamera(camera_id, model_id, width, height, params)
+
+    logger.info("Parsed %d cameras from cameras.bin", len(cameras))
+    return cameras
 
 
 def read_images_binary(path: Path) -> dict[int, ColmapImage]:

@@ -1,12 +1,11 @@
-"""Scale calibration: match 2D cone detections to 3D COLMAP points."""
+"""Scale calibration: compute real-world scale from cone detections + COLMAP data."""
 
 import logging
 from dataclasses import dataclass
 
 import numpy as np
-from sklearn.cluster import DBSCAN
 
-from .colmap_runner import ColmapImage, ColmapPoint3D
+from .colmap_runner import ColmapCamera, ColmapImage, ColmapPoint3D
 from .cone_detection import ConeDetection
 from .config import ScaleCalibrationConfig
 
@@ -16,163 +15,324 @@ logger = logging.getLogger(__name__)
 @dataclass
 class CalibrationResult:
     scale_factor: float  # meters per COLMAP unit
-    confidence: float  # 0-1 based on consistency
+    confidence: float  # 0-1
     num_cones_used: int
     per_cone_scales: list[float]
-    cone_3d_positions: list[np.ndarray]  # 3D centroids of each cone cluster
+    cone_3d_positions: list[np.ndarray]
 
 
-def find_keypoints_in_bbox(
-    image: ColmapImage,
-    bbox: tuple[int, int, int, int],
-    margin: int = 5,
-) -> list[tuple[int, int]]:
-    """Find COLMAP keypoints that fall inside a bounding box.
-
-    Returns list of (keypoint_index, point3d_id) for keypoints with valid 3D points.
-    """
-    x, y, w, h = bbox
-    x1, y1 = x - margin, y - margin
-    x2, y2 = x + w + margin, y + h + margin
-
-    matches = []
-    for idx in range(len(image.xys)):
-        kx, ky = image.xys[idx]
-        p3d_id = image.point3d_ids[idx]
-        if p3d_id >= 0 and x1 <= kx <= x2 and y1 <= ky <= y2:
-            matches.append((idx, int(p3d_id)))
-
-    return matches
+def _qvec_to_rotmat(qvec: np.ndarray) -> np.ndarray:
+    """Convert COLMAP quaternion (w, x, y, z) to 3x3 rotation matrix."""
+    w, x, y, z = qvec
+    return np.array([
+        [1 - 2*(y*y + z*z), 2*(x*y - w*z), 2*(x*z + w*y)],
+        [2*(x*y + w*z), 1 - 2*(x*x + z*z), 2*(y*z - w*x)],
+        [2*(x*z - w*y), 2*(y*z + w*x), 1 - 2*(x*x + y*y)],
+    ])
 
 
-def gather_cone_3d_points(
+def _camera_center(image: ColmapImage) -> np.ndarray:
+    """Get camera center in world coordinates: C = -R^T @ t."""
+    R = _qvec_to_rotmat(image.qvec)
+    return -R.T @ image.tvec
+
+
+def calibrate_scale_projection(
     cone_detections: dict[str, list[ConeDetection]],
     images: dict[int, ColmapImage],
     points3d: dict[int, ColmapPoint3D],
-) -> list[np.ndarray]:
-    """Collect 3D points that fall inside cone bounding boxes across all frames.
+    cameras: dict[int, ColmapCamera],
+    config: ScaleCalibrationConfig,
+) -> CalibrationResult:
+    """Compute scale using projection geometry.
 
-    Returns list of 3D point coordinate arrays, one per detection event.
+    For each cone detection in each frame:
+    1. Get the cone's pixel height from the bounding box
+    2. Get the camera focal length from COLMAP
+    3. Find a COLMAP keypoint inside the cone bbox that has a 3D point
+    4. Compute distance from camera center to that 3D point
+    5. scale = known_height_m * focal_length_px / (pixel_height * distance)
+
+    This is much more reliable than measuring 3D point spread because it
+    only needs ONE good 3D point per cone (not a cluster), and uses the
+    well-calibrated camera model.
     """
-    # Build name→image lookup
     name_to_image = {img.name: img for img in images.values()}
-
-    all_cone_points = []  # list of (N, 3) arrays
+    per_frame_scales = []
+    cone_positions = []
 
     for frame_name, detections in cone_detections.items():
         colmap_img = name_to_image.get(frame_name)
         if colmap_img is None:
             continue
 
+        camera = cameras.get(colmap_img.camera_id)
+        if camera is None:
+            continue
+
+        focal = camera.focal_length
+        cam_center = _camera_center(colmap_img)
+
         for det in detections:
-            matches = find_keypoints_in_bbox(colmap_img, det.bbox)
-            if not matches:
+            x, y, w, h = det.bbox
+            pixel_height = h  # cone height in pixels
+
+            if pixel_height < 20:  # too small to be reliable
                 continue
 
-            pts_3d = []
-            for _, p3d_id in matches:
-                if p3d_id in points3d:
-                    pts_3d.append(points3d[p3d_id].xyz)
+            # Find COLMAP keypoints inside the cone bbox with valid 3D points
+            margin = 5
+            x1, y1 = x - margin, y - margin
+            x2, y2 = x + w + margin, y + h + margin
 
-            if pts_3d:
-                all_cone_points.append(np.array(pts_3d))
+            matched_distances = []
+            matched_positions = []
 
-    logger.info("Gathered 3D points from %d cone detections", len(all_cone_points))
-    return all_cone_points
+            for idx in range(len(colmap_img.xys)):
+                kx, ky = colmap_img.xys[idx]
+                p3d_id = int(colmap_img.point3d_ids[idx])
+                if p3d_id < 0:
+                    continue
+                if not (x1 <= kx <= x2 and y1 <= ky <= y2):
+                    continue
+                if p3d_id not in points3d:
+                    continue
 
+                pt3d = points3d[p3d_id].xyz
+                dist = np.linalg.norm(pt3d - cam_center)
+                matched_distances.append(dist)
+                matched_positions.append(pt3d)
 
-def cluster_cone_points(
-    cone_point_sets: list[np.ndarray],
-    config: ScaleCalibrationConfig,
-) -> list[np.ndarray]:
-    """Cluster gathered cone 3D points into individual physical cones using DBSCAN."""
-    if not cone_point_sets:
-        return []
+            if not matched_distances:
+                continue
 
-    # Combine all cone points
-    all_points = np.vstack(cone_point_sets)
-    if len(all_points) < config.dbscan_min_samples:
-        return []
+            # Use the CLOSEST keypoints — they're most likely on the cone
+            # surface, not background objects that happen to project inside
+            # the bounding box. Use 25th percentile for robustness.
+            close_dist = np.percentile(matched_distances, 25)
 
-    clustering = DBSCAN(
-        eps=config.dbscan_eps,
-        min_samples=config.dbscan_min_samples,
-    ).fit(all_points)
+            # Projection: pixel_height / focal = real_height / distance
+            # real_height (in COLMAP units) = pixel_height * distance / focal
+            # scale = known_height_m / real_height_colmap
+            real_height_colmap = pixel_height * close_dist / focal
+            scale = config.known_cone_height_m / real_height_colmap
 
-    labels = clustering.labels_
-    unique_labels = set(labels) - {-1}
+            per_frame_scales.append(scale)
+            # Store median 3D position as cone location
+            cone_positions.append(np.median(matched_positions, axis=0))
 
-    clusters = []
-    for label in sorted(unique_labels):
-        mask = labels == label
-        clusters.append(all_points[mask])
+    if not per_frame_scales:
+        raise ValueError("No cone-camera projection matches found for calibration")
 
-    logger.info("DBSCAN found %d cone clusters from %d total points",
-                len(clusters), len(all_points))
-    return clusters
+    # Use median across all frames for robustness
+    scale_factor = float(np.median(per_frame_scales))
 
-
-def compute_scale_from_cones(
-    clusters: list[np.ndarray],
-    config: ScaleCalibrationConfig,
-) -> CalibrationResult:
-    """Compute scale factor from cone cluster vertical extents."""
-    if not clusters:
-        raise ValueError("No cone clusters found for calibration")
-
-    per_cone_scales = []
-    cone_positions = []
-
-    for cluster in clusters:
-        # Vertical extent: use the axis with greatest spread
-        # (since we don't know the ground plane yet, use the principal axis)
-        spread = cluster.max(axis=0) - cluster.min(axis=0)
-        vertical_extent = spread.max()  # Largest dimension as proxy for height
-
-        if vertical_extent > 1e-6:
-            scale = config.known_cone_height_m / vertical_extent
-            per_cone_scales.append(scale)
-            cone_positions.append(cluster.mean(axis=0))
-
-    if not per_cone_scales:
-        raise ValueError("Could not compute scale from any cone cluster")
-
-    # Use median for robustness against outliers
-    scale_factor = float(np.median(per_cone_scales))
-
-    # Confidence: based on consistency (low std/mean ratio) and number of cones
-    if len(per_cone_scales) >= 2:
-        cv = np.std(per_cone_scales) / np.mean(per_cone_scales)  # coefficient of variation
+    # Confidence based on consistency and sample count
+    if len(per_frame_scales) >= 3:
+        cv = np.std(per_frame_scales) / np.mean(per_frame_scales)
         consistency = max(0.0, 1.0 - cv)
     else:
         consistency = 0.5
 
-    count_factor = min(1.0, len(per_cone_scales) / config.min_cones_for_confidence)
+    count_factor = min(1.0, len(per_frame_scales) / 10)  # more frames = more confident
     confidence = consistency * count_factor
 
+    # Deduplicate cone positions (cluster nearby ones)
+    unique_positions = _deduplicate_positions(cone_positions, threshold=np.median(per_frame_scales) * 0.5)
+
     logger.info(
-        "Scale: %.6f m/unit (from %d cones, confidence=%.2f)",
-        scale_factor, len(per_cone_scales), confidence,
+        "Projection-based scale: %.4f m/unit (from %d frame-cone pairs, "
+        "%d unique cones, confidence=%.2f)",
+        scale_factor, len(per_frame_scales), len(unique_positions), confidence,
     )
 
     return CalibrationResult(
         scale_factor=scale_factor,
         confidence=confidence,
-        num_cones_used=len(per_cone_scales),
-        per_cone_scales=per_cone_scales,
-        cone_3d_positions=cone_positions,
+        num_cones_used=len(unique_positions),
+        per_cone_scales=per_frame_scales,
+        cone_3d_positions=unique_positions,
+    )
+
+
+def _deduplicate_positions(
+    positions: list[np.ndarray],
+    threshold: float,
+) -> list[np.ndarray]:
+    """Merge nearby 3D positions into unique cone locations."""
+    if not positions:
+        return []
+
+    unique = [positions[0]]
+    for pos in positions[1:]:
+        is_new = True
+        for u in unique:
+            if np.linalg.norm(pos - u) < threshold:
+                is_new = False
+                break
+        if is_new:
+            unique.append(pos)
+    return unique
+
+
+def calibrate_scale_from_camera_height(
+    images: dict[int, ColmapImage],
+    points3d: dict[int, ColmapPoint3D],
+    assumed_camera_height_m: float = 1.6,
+) -> CalibrationResult:
+    """Estimate scale using camera height above the ground plane.
+
+    COLMAP camera positions are its most reliable output. For a handheld
+    walkaround, cameras are ~1.5m above ground. We fit a ground plane to
+    the lowest points, compute camera distances to it, and derive scale.
+    """
+    all_xyz = np.array([p.xyz for p in points3d.values()])
+
+    # Get camera positions
+    cam_centers = []
+    for img in images.values():
+        cam_centers.append(_camera_center(img))
+    cam_centers = np.array(cam_centers)
+
+    # Fit ground plane to the lowest points using RANSAC
+    # The lowest 15% of points along each axis — try all 3 and pick best
+    import open3d as o3d
+
+    pcd = o3d.geometry.PointCloud()
+    pcd.points = o3d.utility.Vector3dVector(all_xyz)
+
+    best_scale = None
+    best_consistency = 0
+
+    for axis in range(3):
+        for use_low in [True, False]:
+            pct = 15 if use_low else 85
+            threshold = np.percentile(all_xyz[:, axis], pct)
+            if use_low:
+                mask = all_xyz[:, axis] <= threshold
+            else:
+                mask = all_xyz[:, axis] >= threshold
+
+            indices = np.where(mask)[0].tolist()
+            if len(indices) < 20:
+                continue
+
+            sub_cloud = pcd.select_by_index(indices)
+            try:
+                plane_model, _ = sub_cloud.segment_plane(
+                    distance_threshold=0.02, ransac_n=3, num_iterations=500,
+                )
+            except Exception:
+                continue
+
+            a, b, c, d = plane_model
+            norm = np.sqrt(a*a + b*b + c*c)
+
+            # Camera distances to this plane (signed)
+            cam_dists = (cam_centers @ np.array([a, b, c]) + d) / norm
+
+            # Ground points distances
+            ground_dists = (all_xyz[mask] @ np.array([a, b, c]) + d) / norm
+
+            # Cameras should be consistently on one side (above ground)
+            # and the ground points should be near zero
+            cam_median = np.median(np.abs(cam_dists))
+            ground_std = np.std(ground_dists)
+
+            if cam_median < 0.01:  # cameras too close to plane
+                continue
+
+            scale_est = assumed_camera_height_m / cam_median
+
+            # Consistency: cameras should have similar heights
+            cam_cv = np.std(np.abs(cam_dists)) / cam_median if cam_median > 0 else 999
+            consistency = max(0.0, 1.0 - cam_cv)
+
+            if consistency > best_consistency:
+                best_consistency = consistency
+                best_scale = scale_est
+
+                logger.info(
+                    "Camera-height axis %d (%s): scale=%.4f, cam_height=%.4f units, "
+                    "consistency=%.2f",
+                    axis, "low" if use_low else "high", scale_est, cam_median, consistency,
+                )
+
+    if best_scale is None:
+        raise ValueError("Could not estimate scale from camera height")
+
+    logger.info("Camera-height scale: %.4f m/unit (consistency=%.2f)",
+                best_scale, best_consistency)
+
+    return CalibrationResult(
+        scale_factor=best_scale,
+        confidence=best_consistency * 0.6,  # Cap at 60% since it's an assumption
+        num_cones_used=0,
+        per_cone_scales=[best_scale],
+        cone_3d_positions=[],
     )
 
 
 def calibrate_scale(
-    cone_detections: dict[str, list],
+    cone_detections: dict[str, list[ConeDetection]],
     images: dict[int, ColmapImage],
     points3d: dict[int, ColmapPoint3D],
     config: ScaleCalibrationConfig | None = None,
+    cameras: dict[int, ColmapCamera] | None = None,
 ) -> CalibrationResult:
-    """Full scale calibration pipeline: detections → 3D matching → clustering → scale."""
+    """Main calibration entry point.
+
+    Tries projection-based (cone pixel height + distance), then cross-checks
+    with camera-height method. Uses the method with better confidence.
+    """
     config = config or ScaleCalibrationConfig()
 
-    cone_point_sets = gather_cone_3d_points(cone_detections, images, points3d)
-    clusters = cluster_cone_points(cone_point_sets, config)
-    return compute_scale_from_cones(clusters, config)
+    projection_result = None
+    camera_result = None
+
+    # Try projection-based calibration
+    if cameras and cone_detections:
+        try:
+            projection_result = calibrate_scale_projection(
+                cone_detections, images, points3d, cameras, config,
+            )
+            logger.info("Projection scale: %.4f (confidence %.2f)",
+                        projection_result.scale_factor, projection_result.confidence)
+        except Exception as e:
+            logger.warning("Projection calibration failed: %s", e)
+
+    # Always try camera-height method as cross-check
+    try:
+        camera_result = calibrate_scale_from_camera_height(
+            images, points3d, config.assumed_camera_height_m,
+        )
+        logger.info("Camera-height scale: %.4f (confidence %.2f)",
+                    camera_result.scale_factor, camera_result.confidence)
+    except Exception as e:
+        logger.warning("Camera-height calibration failed: %s", e)
+
+    # Choose best result
+    if projection_result and camera_result:
+        # If they agree (within 30%), use projection (it uses actual measurements)
+        ratio = projection_result.scale_factor / camera_result.scale_factor
+        if 0.7 < ratio < 1.4:
+            logger.info("Projection and camera-height agree (ratio %.2f), using projection", ratio)
+            return projection_result
+        else:
+            # They disagree — camera height is typically more reliable for
+            # walkarounds since cone keypoints are often on the background
+            logger.warning(
+                "Projection (%.4f) and camera-height (%.4f) disagree by %.1fx — "
+                "using camera-height (more reliable for walkarounds)",
+                projection_result.scale_factor, camera_result.scale_factor, ratio,
+            )
+            # Preserve cone positions from projection result
+            camera_result.cone_3d_positions = projection_result.cone_3d_positions
+            camera_result.num_cones_used = projection_result.num_cones_used
+            return camera_result
+    elif projection_result:
+        return projection_result
+    elif camera_result:
+        return camera_result
+    else:
+        raise ValueError("All calibration methods failed")

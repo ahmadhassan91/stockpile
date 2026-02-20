@@ -57,22 +57,19 @@ def detect_cones(
 
     contours, _ = cv2.findContours(mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
 
-    detections = []
+    # First pass: collect all red blobs with a low area threshold (for merge)
+    pre_merge_min_area = 200
+    candidates = []
     for contour in contours:
         area = cv2.contourArea(contour)
-        if area < config.min_area or area > config.max_area:
+        if area < pre_merge_min_area or area > config.max_area:
             continue
 
         x, y, w, h = cv2.boundingRect(contour)
-        aspect_ratio = h / w if w > 0 else 0
-        if aspect_ratio < config.min_aspect_ratio or aspect_ratio > config.max_aspect_ratio:
-            continue
 
         hull = cv2.convexHull(contour)
         hull_area = cv2.contourArea(hull)
         solidity = area / hull_area if hull_area > 0 else 0
-        if solidity < config.min_solidity:
-            continue
 
         moments = cv2.moments(contour)
         if moments["m00"] == 0:
@@ -83,7 +80,7 @@ def detect_cones(
         tip = (float(x + w / 2), float(y))
         base_center = (float(x + w / 2), float(y + h))
 
-        detections.append(ConeDetection(
+        candidates.append(ConeDetection(
             bbox=(x, y, w, h),
             centroid=(cx, cy),
             tip=tip,
@@ -93,7 +90,22 @@ def detect_cones(
             contour=contour,
         ))
 
-    detections = _merge_vertically_aligned(detections)
+    # Merge vertically aligned parts (cone tip + body split by white band)
+    merged = _merge_vertically_aligned(candidates)
+
+    # Second pass: apply strict filters on merged detections
+    detections = []
+    for det in merged:
+        if det.area < config.min_area or det.area > config.max_area:
+            continue
+        x, y, w, h = det.bbox
+        aspect_ratio = h / w if w > 0 else 0
+        if aspect_ratio < config.min_aspect_ratio or aspect_ratio > config.max_aspect_ratio:
+            continue
+        if det.solidity < config.min_solidity:
+            continue
+        detections.append(det)
+
     logger.debug("Detected %d cones in image", len(detections))
     return detections
 
