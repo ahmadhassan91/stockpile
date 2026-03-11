@@ -1,43 +1,40 @@
-FROM ubuntu:22.04
+# Use Python slim image as base (much smaller than Ubuntu)
+FROM python:3.10-slim
 
-ENV DEBIAN_FRONTEND=noninteractive \
-    PYTHONUNBUFFERED=1 \
-    PYTHONDONTWRITEBYTECODE=1
+ENV PYTHONUNBUFFERED=1 \
+    PYTHONDONTWRITEBYTECODE=1 \
+    QT_QPA_PLATFORM=offscreen \
+    DISPLAY=:99 \
+    PIP_NO_CACHE_DIR=1 \
+    PIP_DISABLE_PIP_VERSION_CHECK=1
 
-# Install system dependencies including Python 3.12 and COLMAP
+# Install only essential system dependencies
 RUN apt-get update && \
     apt-get install -y --no-install-recommends \
-        software-properties-common \
-        gnupg2 \
         curl \
-        git \
-        libgl1-mesa-glx \
-        libglib2.0-0 && \
-    # Add Python 3.12 PPA
-    add-apt-repository -y ppa:deadsnakes/ppa && \
-    # Add COLMAP PPA
-    add-apt-repository -y ppa:colmap/colmap && \
-    apt-get update && \
-    apt-get install -y --no-install-recommends \
-        python3.12 \
-        python3.12-venv \
-        python3.12-dev \
-        python3.12-distutils \
-        colmap && \
-    # Install pip for Python 3.12
-    curl -sS https://bootstrap.pypa.io/get-pip.py | python3.12 && \
-    # Set python3.12 as default python/python3
-    update-alternatives --install /usr/bin/python python /usr/bin/python3.12 1 && \
-    update-alternatives --install /usr/bin/python3 python3 /usr/bin/python3.12 1 && \
-    # Clean up
+        libgl1 \
+        libglib2.0-0 \
+        libgomp1 \
+        xvfb \
+        colmap \
+        ca-certificates && \
     apt-get clean && \
-    rm -rf /var/lib/apt/lists/*
+    rm -rf /var/lib/apt/lists/* /tmp/* /var/tmp/*
 
 WORKDIR /app
 
-# Install Python dependencies
+# Copy and install Python dependencies first (for better layer caching)
 COPY requirements.txt .
-RUN pip install --no-cache-dir -r requirements.txt
+RUN pip install --no-cache-dir -r requirements.txt && \
+    find /usr/local/lib/python3.10/site-packages -type f -name '*.pyc' -delete && \
+    find /usr/local/lib/python3.10/site-packages -type d -name '__pycache__' -delete
+
+# Copy entrypoint script
+COPY docker-entrypoint.sh /usr/local/bin/
+RUN chmod +x /usr/local/bin/docker-entrypoint.sh
+
+# Copy Streamlit config to prevent email prompt
+COPY .streamlit/ .streamlit/
 
 # Copy project source
 COPY pyproject.toml .
@@ -45,7 +42,9 @@ COPY stockpile/ stockpile/
 COPY app/ app/
 
 # Install the project package itself
-RUN pip install --no-cache-dir -e .
+RUN pip install --no-cache-dir -e . && \
+    find /usr/local/lib/python3.10/site-packages -type f -name '*.pyc' -delete && \
+    find /usr/local/lib/python3.10/site-packages -type d -name '__pycache__' -delete
 
 # Create data directory for runtime workspace
 RUN mkdir -p /app/data
@@ -55,6 +54,4 @@ EXPOSE 8501
 HEALTHCHECK --interval=30s --timeout=10s --start-period=5s --retries=3 \
     CMD curl -f http://localhost:8501/_stcore/health || exit 1
 
-ENTRYPOINT ["streamlit", "run", "app/app.py", \
-    "--server.port=8501", \
-    "--server.address=0.0.0.0"]
+ENTRYPOINT ["/usr/local/bin/docker-entrypoint.sh"]
