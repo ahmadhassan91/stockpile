@@ -104,6 +104,61 @@ def _align_to_dominant_plane(pcd: o3d.geometry.PointCloud, config: GroundPlaneCo
     return transformed, np.array(plane_model), inliers, T
 
 
+def _find_ground_z_ransac(pts: np.ndarray, config: GroundPlaneConfig) -> float:
+    """Find the true ground level by fitting a RANSAC plane to the lowest points.
+
+    This is more robust than a simple percentile because a walkaround video
+    produces far more points on the pile surface than on flat ground, meaning
+    a naive percentile will land on the lower pile flank — not the floor.
+
+    Strategy:
+    1. Take the lowest 10% of Z values (most likely to include ground points)
+    2. Fit an Open3D RANSAC plane to those points
+    3. Use the median Z of inlier points as ground_z
+
+    Falls back to the 2nd percentile if RANSAC fails.
+    """
+    z = pts[:, 2]
+    low_thresh = np.percentile(z, 10)
+    low_mask = z <= low_thresh
+    low_pts = pts[low_mask]
+
+    if len(low_pts) < 10:
+        # not enough points — degenerate fallback
+        ground_z = np.percentile(z, 2)
+        logger.warning("Too few low points for RANSAC ground fit; using 2nd percentile: %.3f", ground_z)
+        return ground_z
+
+    pcd_low = o3d.geometry.PointCloud()
+    pcd_low.points = o3d.utility.Vector3dVector(low_pts)
+
+    try:
+        plane_model, inliers = pcd_low.segment_plane(
+            distance_threshold=config.ransac_distance_threshold,
+            ransac_n=3,
+            num_iterations=500,
+        )
+        a, b, c, d = plane_model
+        norm = np.sqrt(a * a + b * b + c * c)
+        if norm < 1e-8:
+            raise ValueError("Degenerate plane normal")
+
+        # Use median Z of the inlier ground points as the ground reference
+        inlier_pts = low_pts[inliers]
+        ground_z = float(np.median(inlier_pts[:, 2]))
+        inlier_ratio = len(inliers) / len(low_pts)
+        logger.info(
+            "RANSAC ground plane: %.3f m (inlier ratio %.0f%%, plane normal [%.2f,%.2f,%.2f])",
+            ground_z, inlier_ratio * 100, a / norm, b / norm, c / norm,
+        )
+        return ground_z
+
+    except Exception as e:
+        ground_z = float(np.percentile(z, 2))
+        logger.warning("RANSAC ground plane failed (%s); falling back to 2nd percentile: %.3f", e, ground_z)
+        return ground_z
+
+
 def segment_pile(
     pcd: o3d.geometry.PointCloud,
     config: GroundPlaneConfig,
@@ -111,9 +166,13 @@ def segment_pile(
 ) -> GroundPlaneResult:
     """Segment pile points from ground.
 
-    Strategy: align cloud using dominant plane, then use the lowest Z values
-    as the ground reference. This works for stockpile walkarounds where
-    most COLMAP points are on the pile surface.
+    Strategy:
+    1. Remove statistical outliers
+    2. Align cloud so the dominant plane is horizontal (RANSAC rotation)
+    3. Find the true ground level using RANSAC on the lowest-Z cluster
+       (NOT a simple percentile, which lands on the pile flank for walkarounds)
+    4. Shift so ground = 0; classify pile vs ground points
+    5. Optionally crop to cone bounding polygon
     """
     # 1. Remove outliers
     cleaned = remove_outliers(pcd, config)
@@ -123,10 +182,9 @@ def segment_pile(
     inlier_ratio = len(inliers) / len(cleaned.points)
     pts = np.asarray(transformed.points)
 
-    # 3. Set ground level from the lowest points
-    # Use 5th percentile as ground reference (robust to noise)
-    ground_z = np.percentile(pts[:, 2], 5)
-    logger.info("Ground Z level: %.3f (5th percentile)", ground_z)
+    # 3. Find TRUE ground level via RANSAC on lowest-Z cluster
+    ground_z = _find_ground_z_ransac(pts, config)
+    logger.info("Ground Z level: %.3f (RANSAC on lowest 10%%)", ground_z)
 
     # Shift so ground = 0
     pts[:, 2] -= ground_z

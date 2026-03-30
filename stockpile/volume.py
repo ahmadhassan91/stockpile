@@ -92,11 +92,15 @@ def volume_grid_integration(
     valid = ~np.isnan(height_grid)
     occupancy_pct = 100 * valid.sum() / valid.size
 
-    if valid.sum() >= 4 and occupancy_pct < 90:
+    if valid.sum() >= 4:
         from scipy.interpolate import griddata
+        from scipy.spatial import ConvexHull
+        from matplotlib.path import Path as MplPath
+
         # Get coordinates of known cells
         known_ij = np.argwhere(valid)
         known_vals = height_grid[valid]
+
         # All cell coordinates
         all_i, all_j = np.meshgrid(
             np.arange(height_grid.shape[0]),
@@ -104,20 +108,35 @@ def volume_grid_integration(
             indexing="ij",
         )
         all_ij = np.column_stack([all_i.ravel(), all_j.ravel()])
-        # Interpolate with linear, fall back to nearest for edges
+
+        # Step 1: linear interpolation (accurate inside convex hull of data)
         interpolated = griddata(known_ij, known_vals, all_ij, method="linear")
         interpolated = interpolated.reshape(height_grid.shape)
-        # Fill remaining NaNs with nearest
+
+        # Step 2: nearest-neighbour for any remaining NaNs (boundary cells)
+        # Use nearest rather than zeroing — this avoids artificially collapsing
+        # the pile periphery to 0 and losing edge volume.
         still_nan = np.isnan(interpolated)
         if still_nan.any():
             nearest = griddata(known_ij, known_vals, all_ij, method="nearest")
             nearest = nearest.reshape(height_grid.shape)
             interpolated[still_nan] = nearest[still_nan]
-        # Only keep interpolated values within the convex hull of known points
-        # (don't extrapolate far outside the data)
-        height_grid_filled = np.where(np.isnan(interpolated), 0, np.maximum(interpolated, 0))
+
+        # Step 3: only keep cells that are inside the convex hull of XY data
+        # (prevents extrapolating FAR outside the actual pile footprint)
+        if len(known_ij) >= 3:
+            try:
+                hull = ConvexHull(known_ij)
+                hull_pts = known_ij[hull.vertices]
+                path = MplPath(hull_pts)
+                inside = path.contains_points(all_ij).reshape(height_grid.shape)
+                interpolated = np.where(inside, interpolated, 0.0)
+            except Exception:
+                pass  # If hull fails, keep all interpolated values
+
+        height_grid_filled = np.maximum(interpolated, 0)
     else:
-        height_grid_filled = np.where(valid, height_grid, 0)
+        height_grid_filled = np.where(valid, np.maximum(height_grid, 0), 0)
 
     # Sum volume: cell_area * height
     cell_area = resolution * resolution
