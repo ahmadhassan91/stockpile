@@ -109,22 +109,18 @@ col1.metric(
     f"{vol.recommended_m3:.2f} m³",
     help="2.5D grid integration — most accurate for stockpiles",
 )
-
-min_weight_kg = result.weight_kg
-max_weight_kg = result.weight_kg + 500
-
 col2.metric(
-    "Weight Range",
-    f"{min_weight_kg / 1000:.2f} - {max_weight_kg / 1000:.2f} tonnes",
+    "Weight",
+    f"{result.weight_kg / 1000:.2f} tonnes",
 )
 if config:
     col3.metric(
-        "Weight Range (kg)",
-        f"{min_weight_kg:,.0f} - {max_weight_kg:,.0f} kg",
+        "Weight (kg)",
+        f"{result.weight_kg:,.0f} kg",
         help=f"Density used: {config.material_density:.0f} kg/m³ ({config.material_name})",
     )
 else:
-    col3.metric("Weight Range (kg)", f"{min_weight_kg:,.0f} - {max_weight_kg:,.0f} kg")
+    col3.metric("Weight (kg)", f"{result.weight_kg:,.0f} kg")
 
 # All three volume methods side-by-side
 st.subheader("Volume Method Comparison")

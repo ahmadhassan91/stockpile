@@ -218,10 +218,17 @@ def segment_pile(
 
             cone_xy = np.array(cone_pos_transformed)
             hull = ConvexHull(cone_xy)
-            hull_vertices = cone_xy[hull.vertices]
-            hull_path = MplPath(hull_vertices)
-            inside = hull_path.contains_points(pts[:, :2])
-            above_mask = above_mask & inside
+            
+            if hull.volume < 1.0:
+                logger.warning(
+                    "Cone bounding area is too small (%.2f m²). Cones may be placed in a line. "
+                    "Skipping spatial crop to avoid cutting off the pile.", hull.volume
+                )
+            else:
+                hull_vertices = cone_xy[hull.vertices]
+                hull_path = MplPath(hull_vertices)
+                inside = hull_path.contains_points(pts[:, :2])
+                above_mask = above_mask & inside
         except Exception as e:
             logger.warning("Could not compute cone boundary hull: %s", e)
 

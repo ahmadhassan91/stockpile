@@ -13,18 +13,27 @@ def render_parameter_sidebar() -> PipelineConfig:
     st.sidebar.subheader("🪨 Material")
 
     preset_names = list(DENSITY_PRESETS.keys())
+    options = preset_names + ["Custom"]
+    
+    if "sidebar_material_select" not in st.session_state:
+        st.session_state["sidebar_material_select"] = st.session_state.get("selected_material", options[0])
+
     material = st.sidebar.selectbox(
         "Material type",
-        options=preset_names + ["Custom"],
-        index=0,
+        options=options,
+        key="sidebar_material_select",
         help="Select the material being measured. Density is set to the maximum value "
              "from the site density table. You can also choose Custom to enter any density.",
     )
 
     if material == "Custom":
+        if "sidebar_density_input" not in st.session_state:
+            st.session_state["sidebar_density_input"] = float(st.session_state.get("selected_density", 1600.0))
+            
         density = st.sidebar.number_input(
             "Density (kg/m³)",
-            value=1600.0, min_value=100.0, max_value=5000.0, step=50.0,
+            min_value=100.0, max_value=5000.0, step=50.0,
+            key="sidebar_density_input",
         )
         density_display = f"{density:.0f} kg/m³"
     else:
@@ -38,15 +47,19 @@ def render_parameter_sidebar() -> PipelineConfig:
 
     # ── Scale Calibration ─────────────────────────────────────────────────
     st.sidebar.subheader("📏 Scale Calibration")
+    
+    default_cone_height = 0.85 if material == "Backfill 0\u201375 mm" else 0.75
+    default_camera_height = 2.4 if material == "Backfill 0\u201375 mm" else 1.6
+    
     cone_height = st.sidebar.number_input(
         "Cone height (m)",
-        value=0.75, min_value=0.1, max_value=2.0, step=0.05,
+        value=default_cone_height, min_value=0.1, max_value=2.0, step=0.05,
         help="Height of the traffic cones placed around the stockpile. "
              "Standard cone = 0.75 m. Mini cone = 0.50 m. Measure yours if unsure.",
     )
     camera_height = st.sidebar.number_input(
         "Camera height above ground (m)",
-        value=1.6, min_value=0.5, max_value=3.0, step=0.1,
+        value=default_camera_height, min_value=0.5, max_value=3.0, step=0.1,
         help="Height of the phone/camera during filming. "
              "Used as fallback when cone detection fails.",
     )

@@ -86,6 +86,9 @@ def material_confirmation_dialog(current_material: str):
             # Save the dialog selection back to session state
             st.session_state["selected_material"] = chosen_material
             st.session_state["selected_density"] = chosen_density
+            st.session_state["sidebar_material_select"] = chosen_material
+            if chosen_material == "Custom":
+                st.session_state["sidebar_density_input"] = float(chosen_density)
             st.session_state["material_confirmed"] = True
 
             # Patch the pipeline config density with the dialog's choice
