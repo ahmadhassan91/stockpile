@@ -7,8 +7,8 @@ from typing import Optional
 
 @dataclass
 class FrameExtractionConfig:
-    interval_sec: float = 0.5
-    max_frames: int = 500
+    interval_sec: float = 0.25   # Increased from 0.5 — more frames = denser COLMAP reconstruction
+    max_frames: int = 800        # Increased from 500 for large-pile videos
     output_format: str = "jpg"
     jpeg_quality: int = 95
 
@@ -53,7 +53,7 @@ class GroundPlaneConfig:
     ransac_distance_threshold: float = 0.02  # meters after scaling
     ransac_n: int = 3
     ransac_iterations: int = 1000
-    above_ground_threshold: float = 0.05  # meters
+    above_ground_threshold: float = 0.10  # meters — raised from 0.05 to reduce ground noise misclassification
     statistical_nb_neighbors: int = 20
     statistical_std_ratio: float = 2.0
 
@@ -64,13 +64,19 @@ class VolumeConfig:
     alpha: float = 0.3  # alpha shape parameter
 
 
+# Material presets — names and max bulk densities from the site density table.
+# Keys are display names; values are max density in kg/m³ (= MT/m³ × 1000).
 DENSITY_PRESETS = {
-    "gravel": 1600,
-    "sand": 1500,
-    "topsoil": 1200,
-    "coal": 1100,
-    "crushed_stone": 1800,
-    "woodchips": 350,
+    "Backfill 0\u201375 mm":    2100,   # 1.80 \u2013 2.10 MT/m\u00b3  — use max
+    "Aggregates 5\u201314 mm":  1650,   # 1.50 \u2013 1.65 MT/m\u00b3  — use max
+    "Aggregates 10\u201320 mm": 1600,   # 1.45 \u2013 1.60 MT/m\u00b3  — use max
+}
+
+# Density range metadata (min, max) in kg/m\u00b3 for display purposes
+DENSITY_RANGES = {
+    "Backfill 0\u201375 mm":    (1800, 2100),
+    "Aggregates 5\u201314 mm":  (1500, 1650),
+    "Aggregates 10\u201320 mm": (1450, 1600),
 }
 
 
@@ -83,8 +89,8 @@ class PipelineConfig:
     scale_calibration: ScaleCalibrationConfig = field(default_factory=ScaleCalibrationConfig)
     ground_plane: GroundPlaneConfig = field(default_factory=GroundPlaneConfig)
     volume: VolumeConfig = field(default_factory=VolumeConfig)
-    material_density: float = 1600.0  # kg/m3
-    material_name: str = "gravel"
+    material_density: float = 2100.0  # kg/m3 — default: Backfill 0-75mm max density
+    material_name: str = "Backfill 0\u201375 mm"
     manual_scale_override: Optional[float] = None  # If set, bypass auto calibration
     progress_callback: Optional[object] = field(default=None, repr=False)
 

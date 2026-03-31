@@ -139,8 +139,43 @@ if result and not st.session_state.get("pipeline_running"):
     if result.error:
         st.error(f"Last run failed at stage '{result.stage}': {result.error}")
     else:
-        st.success("Processing complete!")
-        col1, col2, col3 = st.columns(3)
-        col1.metric("Frames Extracted", result.num_frames)
-        col2.metric("COLMAP 3D Points", result.num_colmap_points)
-        col3.metric("Pile Points", len(result.pile_cloud.points) if result.pile_cloud else 0)
+        st.success("✅ Processing complete! Navigate to the **Results** page to review the output.")
+        st.divider()
+
+        # Row 1: reconstruction stats
+        col1, col2, col3, col4 = st.columns(4)
+        col1.metric("Frames Extracted", f"{result.num_frames:,}")
+        col2.metric("Frames w/ Cones", f"{result.num_frames_with_cones:,}")
+        col3.metric("COLMAP 3D Points", f"{result.num_colmap_points:,}")
+        col4.metric("Pile Points", f"{len(result.pile_cloud.points):,}" if result.pile_cloud else "0")
+
+        # Row 2: calibration summary
+        if result.calibration:
+            cal = result.calibration
+            conf_pct = cal.confidence * 100
+            conf_icon = "🟢" if conf_pct >= 70 else ("🟡" if conf_pct >= 40 else "🔴")
+            col1, col2, col3, col4 = st.columns(4)
+            col1.metric("Scale Factor", f"{cal.scale_factor:.4f} m/unit")
+            col2.metric("Cal. Confidence", f"{conf_pct:.0f}%")
+            col3.metric("Cones Used", str(cal.num_cones_used))
+            if result.volume:
+                col4.metric("Volume (Grid)", f"{result.volume.recommended_m3:.1f} m³")
+
+            if conf_pct < 40:
+                st.error(
+                    f"{conf_icon} **Low calibration confidence ({conf_pct:.0f}%).** "
+                    "Volume results may be inaccurate. Consider enabling the manual scale override "
+                    "in the sidebar before re-running."
+                )
+            elif conf_pct < 70:
+                st.warning(
+                    f"{conf_icon} **Medium calibration confidence ({conf_pct:.0f}%).** "
+                    "Results are indicative — verify against a reference measurement."
+                )
+        else:
+            st.error(
+                "🔴 **No scale calibration** — cones were not detected in any frame. "
+                "Volume is in arbitrary COLMAP units and is not usable. "
+                "Check that red traffic cones are clearly visible in the video, or use manual scale override."
+            )
+
