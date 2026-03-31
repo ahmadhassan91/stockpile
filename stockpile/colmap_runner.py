@@ -102,7 +102,7 @@ def run_colmap_reconstruction(
             cmd,
             capture_output=True,
             text=True,
-            timeout=1800,  # 30 min timeout
+            timeout=14400,  # 4 hours timeout
         )
 
         if result.returncode != 0:
@@ -113,7 +113,7 @@ def run_colmap_reconstruction(
         logger.info("COLMAP reconstruction complete")
 
     except subprocess.TimeoutExpired:
-        raise RuntimeError("COLMAP timed out after 30 minutes")
+        raise RuntimeError("COLMAP timed out after 4 hours")
 
     if progress_callback:
         progress_callback(0.8)
