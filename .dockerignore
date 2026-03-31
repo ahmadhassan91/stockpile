@@ -4,41 +4,46 @@
 .gitattributes
 
 # Python
-__pycache__
+__pycache__/
 *.py[cod]
 *$py.class
 *.so
 .Python
-*.egg-info
-dist
-build
+*.egg-info/
+dist/
+build/
 *.egg
 
-# Virtual environments
-venv
-env
-ENV
+# Virtual environments (ignore nested ones too)
+venv/
+env/
+ENV/
+.venv/
+**/venv/
+**/env/
+**/ENV/
+**/.venv/
 
 # IDE
-.vscode
-.idea
+.vscode/
+.idea/
 *.swp
 *.swo
 *~
 
 # Testing
-.pytest_cache
+.pytest_cache/
 .coverage
-htmlcov
+htmlcov/
 
-# Documentation
+# Docs
 *.md
 docs/
 *.txt
 !requirements.txt
 
-# Data and runtime files (don't copy to image)
-data/workspace/
+# Runtime / generated data
+data/
 *.mp4
 *.avi
 *.mov
