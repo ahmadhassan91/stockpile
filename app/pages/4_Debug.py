@@ -45,7 +45,7 @@ if config.images_dir.exists():
                 st.image(
                     cv2.cvtColor(overlay, cv2.COLOR_BGR2RGB),
                     caption=f"{fp.name} ({len(dets)} cones)",
-                    use_container_width=True,
+                    width="stretch",
                 )
     else:
         st.info("No frames found. Run the pipeline first.")
@@ -103,7 +103,7 @@ if result and result.pile_cloud:
     if len(pile_pts) > 0:
         st.write(f"**Pile points**: {len(pile_pts)}")
         st.write(f"**Height range**: {pile_pts[:, 2].min():.3f} — {pile_pts[:, 2].max():.3f} m")
-        st.write(f"**XY extent**: {pile_pts[:, 0].ptp():.2f} × {pile_pts[:, 1].ptp():.2f} m")
+        st.write(f"**XY extent**: {np.ptp(pile_pts[:, 0]):.2f} × {np.ptp(pile_pts[:, 1]):.2f} m")
 
     if result.ground_cloud:
         ground_pts = np.asarray(result.ground_cloud.points)
