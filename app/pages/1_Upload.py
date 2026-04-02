@@ -15,6 +15,7 @@ import sys
 sys.path.insert(0, str(Path(__file__).parent.parent))
 from components.parameter_sidebar import (
     build_pipeline_config_from_state,
+    get_pipeline_setting_signature,
     queue_sidebar_setting_overrides,
     render_parameter_sidebar,
     SIDEBAR_SETTING_KEYS,
