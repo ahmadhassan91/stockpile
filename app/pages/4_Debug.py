@@ -110,9 +110,16 @@ st.subheader("Scale Calibration Details")
 
 if result and result.calibration:
     cal = result.calibration
-    st.write(f"**Scale factor**: {cal.scale_factor:.6f} m/COLMAP unit")
+    st.write(f"**Scale factor used**: {(result.scale_factor_m_per_unit or cal.scale_factor):.6f} m/COLMAP unit")
+    st.write(f"**Scale source**: {result.scale_source}")
     st.write(f"**Confidence**: {cal.confidence:.2%}")
     st.write(f"**Cones used**: {cal.num_cones_used}")
+    if cal.projection_scale_factor is not None:
+        st.write(f"**Projection scale**: {cal.projection_scale_factor:.6f} m/unit")
+    if cal.camera_height_scale_factor is not None:
+        st.write(f"**Camera-height scale**: {cal.camera_height_scale_factor:.6f} m/unit")
+    if cal.scale_disagreement_ratio is not None:
+        st.write(f"**Scale disagreement**: {cal.scale_disagreement_ratio:.2f}x")
 
     if cal.per_cone_scales:
         st.write("**Per-cone scale factors:**")
@@ -141,6 +148,25 @@ if result and result.pile_cloud:
         st.write(f"**Ground points**: {len(ground_pts)}")
 else:
     st.info("No segmentation data available.")
+
+st.subheader("Measurement Reliability")
+if result:
+    st.write(f"**Publishable**: {'Yes' if result.publishable else 'No'}")
+    if result.volume:
+        st.write(f"**Grid occupancy**: {result.volume.grid_occupancy_pct:.2f}%")
+        if result.volume.grid_to_hull_ratio is not None:
+            st.write(f"**Grid / hull ratio**: {result.volume.grid_to_hull_ratio:.2f}x")
+        st.write(f"**Recommended volume method**: {result.volume.recommended_method}")
+
+    if result.quality_blockers:
+        st.write("**Blockers:**")
+        for blocker in result.quality_blockers:
+            st.write(f"  - {blocker}")
+
+    if result.quality_warnings:
+        st.write("**Warnings:**")
+        for warning in result.quality_warnings:
+            st.write(f"  - {warning}")
 
 st.divider()
 render_log_viewer(lines=150, key_prefix="debug")

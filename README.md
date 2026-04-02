@@ -46,8 +46,8 @@ Open http://localhost:8501 in your browser.
 
 1. **Upload** — Upload a walkaround video (MP4/AVI/MOV) of the stockpile with red traffic cones placed around it. Set cone height and material type in the sidebar.
 2. **Processing** — Click "Start Processing". The pipeline extracts frames, detects cones, runs COLMAP 3D reconstruction, calibrates scale, fits the ground plane, and computes volume. This takes 5–30 minutes depending on video length and COLMAP quality setting.
-3. **Results** — View estimated volume (m³) and weight (kg/tonnes), interactive 3D point cloud, and download the PLY file.
-4. **Debug** — Inspect cone detections per frame, COLMAP reconstruction stats, scale calibration details, and ground plane fit metrics.
+3. **Results** — View estimated volume (m³) and weight (kg/tonnes), interactive 3D point cloud, and run reliability diagnostics before reporting a result.
+4. **Debug** — Inspect cone detections per frame, COLMAP reconstruction stats, scale calibration details, and ground plane / volume quality metrics.
 
 ### Tips
 
@@ -55,6 +55,7 @@ Open http://localhost:8501 in your browser.
 - **Video capture**: Walk slowly around the entire pile. 1–3 minutes at 30fps works well. Overlap between frames helps COLMAP.
 - **Scale override**: If auto-calibration confidence is low (< 50%), use the "Override scale manually" checkbox in the sidebar to set the scale factor directly.
 - **COLMAP quality**: Use "low" for quick tests, "medium" (default) for production, "high" if you have time and want maximum points.
+- **Reliability gates**: Treat runs with low grid occupancy, large scale disagreement, or very sparse pile points as review-only until they are cross-checked against survey or weighbridge data.
 
 ## Project Structure
 
@@ -86,5 +87,6 @@ stock_pile/
 3. **COLMAP sparse reconstruction** — `automatic_reconstructor` with `--dense 0` (no CUDA required)
 4. **Scale calibration** — Match 2D cone detections to 3D COLMAP keypoints, cluster with DBSCAN, compute scale from cone height
 5. **Ground plane fitting** — Dominant-plane alignment + percentile-based ground level
-6. **Volume computation** — Three methods: convex hull, alpha shape, 2.5D grid integration with interpolation (recommended)
-7. **Weight** = volume × material density
+6. **Volume computation** — Three methods: convex hull, alpha shape, 2.5D grid integration with interpolation, plus a conservative fallback when the grid estimate becomes unstable
+7. **Reliability assessment** — Flag runs with weak calibration, sparse reconstruction, or runaway interpolation before they are reported
+8. **Weight** = selected volume × material density
