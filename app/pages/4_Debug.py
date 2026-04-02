@@ -156,6 +156,11 @@ if result:
         st.write(f"**Grid occupancy**: {result.volume.grid_occupancy_pct:.2f}%")
         if result.volume.grid_to_hull_ratio is not None:
             st.write(f"**Grid / hull ratio**: {result.volume.grid_to_hull_ratio:.2f}x")
+        if result.volume.footprint_area_m2 is not None:
+            st.write(
+                f"**Footprint**: {result.volume.footprint_area_m2:.2f} m² "
+                f"({result.volume.footprint_source})"
+            )
         st.write(f"**Recommended volume method**: {result.volume.recommended_method}")
 
     if result.quality_blockers:

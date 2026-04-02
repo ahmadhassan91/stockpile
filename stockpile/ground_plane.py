@@ -159,6 +159,50 @@ def _find_ground_z_ransac(pts: np.ndarray, config: GroundPlaneConfig) -> float:
         return ground_z
 
 
+def _cone_footprint_mask(
+    pts_xy: np.ndarray,
+    cone_positions: list[np.ndarray],
+    transform_matrix: np.ndarray,
+    margin_m: float,
+) -> np.ndarray | None:
+    """Return a mask for points inside the transformed cone footprint."""
+    if len(cone_positions) < 3:
+        return None
+
+    try:
+        from matplotlib.path import Path as MplPath
+        from scipy.spatial import ConvexHull
+
+        transformed_cones = []
+        for cp in cone_positions:
+            p = np.append(cp, 1.0)
+            transformed_cones.append((transform_matrix @ p)[:2])
+
+        cone_xy = np.array(transformed_cones)
+        hull = ConvexHull(cone_xy)
+        if hull.volume < 1.0:
+            logger.warning(
+                "Cone bounding area is too small (%.2f m²). Cones may be placed in a line. "
+                "Skipping spatial crop to avoid cutting off the pile.",
+                hull.volume,
+            )
+            return None
+
+        hull_vertices = cone_xy[hull.vertices]
+        hull_path = MplPath(hull_vertices)
+        inside = hull_path.contains_points(pts_xy, radius=2 * margin_m if margin_m > 0 else 0.0)
+        logger.info(
+            "Cone footprint crop: keeping %d / %d points within %.2f m margin",
+            int(inside.sum()),
+            len(inside),
+            margin_m,
+        )
+        return inside
+    except Exception as e:
+        logger.warning("Could not compute cone boundary hull: %s", e)
+        return None
+
+
 def segment_pile(
     pcd: o3d.geometry.PointCloud,
     config: GroundPlaneConfig,
@@ -206,31 +250,10 @@ def segment_pile(
 
     # 5. Optional: spatial crop using cone positions
     if cone_positions and len(cone_positions) >= 3:
-        try:
-            from scipy.spatial import ConvexHull
-            from matplotlib.path import Path as MplPath
-
-            cone_pos_transformed = []
-            for cp in cone_positions:
-                p = np.append(cp, 1.0)
-                p_t = T @ p
-                cone_pos_transformed.append(p_t[:2])
-
-            cone_xy = np.array(cone_pos_transformed)
-            hull = ConvexHull(cone_xy)
-            
-            if hull.volume < 1.0:
-                logger.warning(
-                    "Cone bounding area is too small (%.2f m²). Cones may be placed in a line. "
-                    "Skipping spatial crop to avoid cutting off the pile.", hull.volume
-                )
-            else:
-                hull_vertices = cone_xy[hull.vertices]
-                hull_path = MplPath(hull_vertices)
-                inside = hull_path.contains_points(pts[:, :2])
-                above_mask = above_mask & inside
-        except Exception as e:
-            logger.warning("Could not compute cone boundary hull: %s", e)
+        inside = _cone_footprint_mask(pts[:, :2], cone_positions, T, config.cone_crop_margin_m)
+        if inside is not None:
+            above_mask = above_mask & inside
+            ground_mask = ground_mask & inside
 
     pile_cloud = transformed.select_by_index(np.where(above_mask)[0].tolist())
     ground_cloud = transformed.select_by_index(np.where(ground_mask)[0].tolist())

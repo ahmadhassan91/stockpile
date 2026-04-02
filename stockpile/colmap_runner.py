@@ -77,8 +77,8 @@ def _subsample_images_dir(images_dir: Path, max_frames: int) -> Path:
     if len(all_images) <= max_frames:
         return images_dir
 
-    step = len(all_images) / max_frames
-    selected = [all_images[int(i * step)] for i in range(max_frames)]
+    selected_idx = np.linspace(0, len(all_images) - 1, max_frames, dtype=int)
+    selected = [all_images[idx] for idx in selected_idx]
 
     subset_dir = images_dir.parent / "images_colmap_subset"
     if subset_dir.exists():
@@ -89,8 +89,8 @@ def _subsample_images_dir(images_dir: Path, max_frames: int) -> Path:
         shutil.copy2(img, subset_dir / img.name)
 
     logger.info(
-        "Subsampled %d → %d frames for COLMAP (step=%.1f)",
-        len(all_images), len(selected), step,
+        "Subsampled %d → %d frames for COLMAP (even spacing)",
+        len(all_images), len(selected),
     )
     return subset_dir
 

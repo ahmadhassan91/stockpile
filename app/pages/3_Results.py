@@ -140,13 +140,14 @@ if pile_pts < 500:
     )
 
 if vol:
-    col1, col2, col3 = st.columns(3)
+    col1, col2, col3, col4 = st.columns(4)
     col1.metric("Grid Occupancy", f"{vol.grid_occupancy_pct:.1f}%")
     if vol.grid_to_hull_ratio is not None:
         col2.metric("Grid / Hull Ratio", f"{vol.grid_to_hull_ratio:.2f}x")
     else:
         col2.metric("Grid / Hull Ratio", "N/A")
     col3.metric("Recommended Method", vol.recommended_method.replace("_", " ").title())
+    col4.metric("Footprint", (vol.footprint_source or "bounding_box").replace("_", " ").title())
 
 st.divider()
 
@@ -189,6 +190,8 @@ with c1:
         f"Grid: {vol.grid_resolution:.2f} m cells, {vol.num_points:,} pile points, "
         f"{vol.grid_occupancy_pct:.1f}% occupancy"
     )
+    if vol.footprint_area_m2 is not None:
+        st.caption(f"Footprint area: {vol.footprint_area_m2:.1f} m² via {vol.footprint_source.replace('_', ' ')}")
 
 with c2:
     st.metric(
