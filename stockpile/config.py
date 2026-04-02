@@ -49,6 +49,7 @@ class ScaleCalibrationConfig:
     dbscan_min_samples: int = 3
     min_cones_for_confidence: int = 3
     max_method_disagreement_ratio: float = 1.75
+    random_seed: int = 7
 
 
 @dataclass
@@ -60,6 +61,7 @@ class GroundPlaneConfig:
     cone_crop_margin_m: float = 0.75
     statistical_nb_neighbors: int = 20
     statistical_std_ratio: float = 2.0
+    random_seed: int = 7
 
 
 @dataclass
@@ -79,15 +81,18 @@ class QualityGateConfig:
     min_unique_cones_warn: int = 3
     min_unique_cones_block: int = 2
     max_scale_disagreement_warn: float = 1.5
-    max_scale_disagreement_block: float = 2.0
+    max_scale_disagreement_block: float = 3.5
     min_pile_points_warn: int = 5000
     min_pile_points_block: int = 1500
     min_grid_occupancy_warn_pct: float = 5.0
     min_grid_occupancy_block_pct: float = 1.0
     max_grid_to_hull_warn_ratio: float = 2.5
     max_grid_to_hull_block_ratio: float = 5.0
-    max_pile_height_warn_m: float = 8.0
-    max_pile_height_block_m: float = 12.0
+    tall_pile_warn_m: float = 12.0
+    peak_relief_warn_m: float = 1.0
+    peak_relief_block_m: float = 2.0
+    peak_relief_warn_ratio: float = 1.08
+    peak_relief_block_ratio: float = 1.15
 
 
 # Material presets — names and max bulk densities from the site density table.

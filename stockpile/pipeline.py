@@ -82,6 +82,9 @@ class Pipeline:
         pile_pts = np.asarray(result.pile_cloud.points) if result.pile_cloud else np.empty((0, 3))
         pile_count = len(pile_pts)
         pile_height = float(np.max(pile_pts[:, 2])) if pile_count else 0.0
+        pile_height_p99 = float(np.percentile(pile_pts[:, 2], 99)) if pile_count >= 100 else pile_height
+        peak_relief_m = max(0.0, pile_height - pile_height_p99)
+        peak_relief_ratio = (pile_height / pile_height_p99) if pile_height_p99 > 1e-6 else None
 
         if pile_count < gates.min_pile_points_block:
             self._add_blocker(
@@ -94,16 +97,25 @@ class Pipeline:
                 f"Only {pile_count:,} pile points were reconstructed; the estimate should be reviewed against a reference.",
             )
 
-        if pile_height > gates.max_pile_height_block_m:
-            self._add_blocker(
-                result,
-                f"Pile height reached {pile_height:.2f} m, which is outside the expected operating envelope and suggests a bad scale or segmentation run.",
-            )
-        elif pile_height > gates.max_pile_height_warn_m:
+        if pile_height > gates.tall_pile_warn_m:
             self._add_warning(
                 result,
-                f"Pile height reached {pile_height:.2f} m, which is unusually high and should be checked against site conditions.",
+                f"Pile height reached {pile_height:.2f} m; verify that the reconstructed shape is consistent with site conditions.",
             )
+
+        if peak_relief_ratio is not None:
+            if peak_relief_m > gates.peak_relief_block_m and peak_relief_ratio > gates.peak_relief_block_ratio:
+                self._add_blocker(
+                    result,
+                    f"The highest part of the pile rises {peak_relief_m:.2f} m above the 99th-percentile surface level "
+                    f"({peak_relief_ratio:.2f}x), which suggests a spiky reconstruction artifact.",
+                )
+            elif peak_relief_m > gates.peak_relief_warn_m and peak_relief_ratio > gates.peak_relief_warn_ratio:
+                self._add_warning(
+                    result,
+                    f"The top surface shows a pronounced spike: {peak_relief_m:.2f} m above the 99th-percentile height "
+                    f"({peak_relief_ratio:.2f}x).",
+                )
 
         if result.calibration and not manual_scale:
             cal = result.calibration

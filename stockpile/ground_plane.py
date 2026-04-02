@@ -53,6 +53,7 @@ def _align_to_dominant_plane(pcd: o3d.geometry.PointCloud, config: GroundPlaneCo
 
     Returns (transformed_cloud, plane_eq, inliers, transform_matrix).
     """
+    o3d.utility.random.seed(config.random_seed)
     plane_model, inliers = pcd.segment_plane(
         distance_threshold=config.ransac_distance_threshold,
         ransac_n=config.ransac_n,
@@ -133,6 +134,7 @@ def _find_ground_z_ransac(pts: np.ndarray, config: GroundPlaneConfig) -> float:
     pcd_low.points = o3d.utility.Vector3dVector(low_pts)
 
     try:
+        o3d.utility.random.seed(config.random_seed)
         plane_model, inliers = pcd_low.segment_plane(
             distance_threshold=config.ransac_distance_threshold,
             ransac_n=3,

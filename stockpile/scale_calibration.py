@@ -4,6 +4,7 @@ import logging
 from dataclasses import dataclass, field
 
 import numpy as np
+import open3d as o3d
 
 from .colmap_runner import ColmapCamera, ColmapImage, ColmapPoint3D
 from .cone_detection import ConeDetection
@@ -189,6 +190,7 @@ def calibrate_scale_from_camera_height(
     images: dict[int, ColmapImage],
     points3d: dict[int, ColmapPoint3D],
     assumed_camera_height_m: float = 1.6,
+    random_seed: int = 7,
 ) -> CalibrationResult:
     """Estimate scale using camera height above the ground plane.
 
@@ -206,13 +208,13 @@ def calibrate_scale_from_camera_height(
 
     # Fit ground plane to the lowest points using RANSAC
     # The lowest 15% of points along each axis — try all 3 and pick best
-    import open3d as o3d
-
     pcd = o3d.geometry.PointCloud()
     pcd.points = o3d.utility.Vector3dVector(all_xyz)
 
     best_scale = None
     best_consistency = 0
+
+    o3d.utility.random.seed(random_seed)
 
     for axis in range(3):
         for use_low in [True, False]:
@@ -317,7 +319,7 @@ def calibrate_scale(
     # Always try camera-height method as cross-check
     try:
         camera_result = calibrate_scale_from_camera_height(
-            images, points3d, config.assumed_camera_height_m,
+            images, points3d, config.assumed_camera_height_m, config.random_seed,
         )
         logger.info("Camera-height scale: %.4f (confidence %.2f)",
                     camera_result.scale_factor, camera_result.confidence)
