@@ -110,6 +110,7 @@ st.subheader("Scale Calibration Details")
 
 if result and result.calibration:
     cal = result.calibration
+    crosscheck_min_conf = config.scale_calibration.min_camera_height_confidence_for_crosscheck
     st.write(f"**Scale factor used**: {(result.scale_factor_m_per_unit or cal.scale_factor):.6f} m/COLMAP unit")
     st.write(f"**Scale source**: {result.scale_source}")
     st.write(f"**Confidence**: {cal.confidence:.2%}")
@@ -118,8 +119,18 @@ if result and result.calibration:
         st.write(f"**Projection scale**: {cal.projection_scale_factor:.6f} m/unit")
     if cal.camera_height_scale_factor is not None:
         st.write(f"**Camera-height scale**: {cal.camera_height_scale_factor:.6f} m/unit")
-    if cal.scale_disagreement_ratio is not None:
+    if cal.camera_height_confidence is not None:
+        st.write(f"**Camera-height confidence**: {cal.camera_height_confidence:.2%}")
+    if (
+        cal.camera_height_scale_factor is not None
+        and cal.camera_height_confidence is not None
+        and cal.camera_height_confidence < crosscheck_min_conf
+    ):
+        st.write("**Cross-check status**: skipped (ground-plane fit was not stable enough)")
+    elif cal.scale_disagreement_ratio is not None:
         st.write(f"**Scale disagreement**: {cal.scale_disagreement_ratio:.2f}x")
+    else:
+        st.write("**Cross-check status**: aligned or unavailable")
 
     if cal.per_cone_scales:
         st.write("**Per-cone scale factors:**")
@@ -129,6 +140,11 @@ if result and result.calibration:
         mean_s = np.mean(cal.per_cone_scales)
         std_s = np.std(cal.per_cone_scales)
         st.write(f"  - Mean: {mean_s:.6f}, Std: {std_s:.6f}, CV: {std_s/mean_s:.2%}" if mean_s > 0 else "")
+
+    if cal.notes:
+        st.write("**Calibration notes:**")
+        for note in cal.notes:
+            st.write(f"  - {note}")
 else:
     st.info("No calibration data available.")
 

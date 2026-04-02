@@ -45,9 +45,13 @@ class ColmapConfig:
 class ScaleCalibrationConfig:
     known_cone_height_m: float = 0.75  # Standard 750mm traffic cone
     assumed_camera_height_m: float = 1.6  # Handheld phone height above ground
-    dbscan_eps: float = 0.5  # In COLMAP units, tuned during calibration
+    dbscan_eps: float = 2.1  # In COLMAP units, clusters noisy cone centroids across frames
     dbscan_min_samples: int = 3
     min_cones_for_confidence: int = 3
+    projection_outlier_mad_multiplier: float = 3.5
+    camera_height_ground_std_rel_max: float = 0.10
+    camera_height_cone_cv_max: float = 0.75
+    min_camera_height_confidence_for_crosscheck: float = 0.20
     max_method_disagreement_ratio: float = 1.75
     random_seed: int = 7
 
