@@ -9,6 +9,7 @@ import streamlit as st
 
 from stockpile.cone_detection import detect_cones, draw_cone_overlays
 from stockpile.config import DENSITY_PRESETS, DENSITY_RANGES
+from stockpile.ai_preflight import openai_preflight_enabled, run_openai_preflight
 from stockpile.frame_extraction import get_first_frame, get_video_info
 
 import sys
@@ -103,10 +104,18 @@ def infer_material_from_filename(filename: str) -> str | None:
     return None
 
 
-def apply_upload_material_hint(filename: str):
-    """Apply a filename-based material suggestion into sidebar and dialog state."""
-    inferred_material = infer_material_from_filename(filename)
+def apply_upload_material_hint(filename: str, ai_preflight=None):
+    """Apply upload material suggestions into dialog state."""
+    filename_material = infer_material_from_filename(filename)
+    ai_material = None
+    if ai_preflight is not None and ai_preflight.material_confidence >= 0.75:
+        ai_material = ai_preflight.suggested_material
+
+    inferred_material = filename_material or ai_material
+    inferred_source = "filename" if filename_material else ("ai" if ai_material else None)
     st.session_state["upload_inferred_material"] = inferred_material
+    st.session_state["upload_inferred_material_source"] = inferred_source
+
     if inferred_material is None:
         return
 
@@ -127,12 +136,15 @@ def build_upload_setting_notes(video_info: dict | None, detections: list | None)
     quality = st.session_state.get("dialog_colmap_quality", "medium")
     manual_scale_enabled = bool(st.session_state.get("dialog_manual_scale_enabled", False))
     inferred_material = st.session_state.get("upload_inferred_material")
+    inferred_material_source = st.session_state.get("upload_inferred_material_source")
     profile_label = st.session_state.get("recommended_processing_profile")
     profile_notes = st.session_state.get("recommended_processing_notes", [])
+    ai_preflight = st.session_state.get("ai_preflight_result")
 
     if inferred_material:
+        source_label = "filename" if inferred_material_source == "filename" else "AI preflight"
         notes.append(
-            f"Material was auto-suggested from the filename as **{inferred_material}**. "
+            f"Material was auto-suggested from the {source_label} as **{inferred_material}**. "
             "Please confirm it matches the actual stockpile before continuing."
         )
     if profile_label:
@@ -140,6 +152,16 @@ def build_upload_setting_notes(video_info: dict | None, detections: list | None)
             f"Processing profile **{profile_label}** was auto-selected from the upload quality signals."
         )
         notes.extend(profile_notes[:2])
+    if ai_preflight:
+        notes.append(
+            f"AI preflight ({ai_preflight.provider} {ai_preflight.model}) cone visibility score: "
+            f"{ai_preflight.cone_visibility_score:.0%}."
+        )
+        notes.extend(ai_preflight.notes[:2])
+        if ai_preflight.retake_required and ai_preflight.retake_reason:
+            warnings.append(
+                f"AI preflight suggests retaking the clip: {ai_preflight.retake_reason}"
+            )
 
     if video_info:
         estimated_frames = max(1, int(video_info["duration"] / max(interval, 0.01)))
@@ -184,7 +206,22 @@ def build_upload_setting_notes(video_info: dict | None, detections: list | None)
 
 def apply_recommended_dialog_preset(material: str, video_info: dict | None, detections: list | None):
     """Apply smart preset overrides into the dialog state before widgets render."""
-    overrides, profile_label, reasons = build_recommended_sidebar_overrides(material, video_info, detections)
+    ai_preflight = st.session_state.get("ai_preflight_result")
+    ai_profile_key = None
+    ai_notes = None
+    if ai_preflight is not None and ai_preflight.profile_confidence >= 0.70:
+        ai_profile_key = ai_preflight.processing_profile
+        ai_notes = list(ai_preflight.notes)
+        if ai_preflight.retake_required and ai_preflight.retake_reason:
+            ai_notes.insert(0, ai_preflight.retake_reason)
+
+    overrides, profile_label, reasons = build_recommended_sidebar_overrides(
+        material,
+        video_info,
+        detections,
+        ai_profile_key=ai_profile_key,
+        ai_notes=ai_notes,
+    )
     for sidebar_key, value in overrides.items():
         dialog_key = next(
             (candidate for candidate, mapped_key in SETTING_KEY_MAP.items() if mapped_key == sidebar_key),
@@ -215,10 +252,21 @@ def settings_review_dialog(video_info: dict | None, detections: list | None):
         key="dialog_material_select",
     )
 
+    ai_preflight = st.session_state.get("ai_preflight_result")
+    ai_profile_key = None
+    ai_notes = None
+    if ai_preflight is not None and ai_preflight.profile_confidence >= 0.70:
+        ai_profile_key = ai_preflight.processing_profile
+        ai_notes = list(ai_preflight.notes)
+        if ai_preflight.retake_required and ai_preflight.retake_reason:
+            ai_notes.insert(0, ai_preflight.retake_reason)
+
     _, profile_label, profile_notes = build_recommended_sidebar_overrides(
         chosen_material,
         video_info,
         detections,
+        ai_profile_key=ai_profile_key,
+        ai_notes=ai_notes,
     )
     profile_signature = (chosen_material, profile_label)
     if st.session_state.get("dialog_recommended_signature") != profile_signature:
@@ -263,6 +311,17 @@ def settings_review_dialog(video_info: dict | None, detections: list | None):
     st.info(f"**{profile_label}**")
     if profile_notes:
         st.caption("  \n".join(f"- {note}" for note in profile_notes))
+
+    if ai_preflight is not None:
+        if ai_preflight.retake_required:
+            st.warning(
+                f"AI preflight suggests a retake before measurement: {ai_preflight.retake_reason}"
+            )
+        else:
+            st.caption(
+                f"AI preflight ({ai_preflight.provider} {ai_preflight.model}) is available "
+                "and is being used only for setup guidance, not for the final measurement."
+            )
 
     if st.session_state.get("sidebar_admin_mode"):
         with st.expander("Advanced processing settings", expanded=False):
@@ -395,6 +454,8 @@ if uploaded is not None:
         st.session_state.settings_confirmed = False
         st.session_state.settings_dialog_dismissed = False
         st.session_state.confirmed_settings_signature = None
+        st.session_state["ai_preflight_result"] = None
+        st.session_state["ai_preflight_source"] = None
         st.session_state["last_uploaded_name"] = uploaded.name
         st.session_state["_upload_processed"] = False
         st.session_state["video_path"] = None
@@ -437,6 +498,22 @@ if uploaded is not None:
             else:
                 st.session_state["_cone_detections"] = []
 
+            if openai_preflight_enabled():
+                st.write("Running AI preflight...")
+                try:
+                    ai_preflight = run_openai_preflight(
+                        tmp.name,
+                        st.session_state.get("_video_info"),
+                        uploaded.name,
+                        first_frame_cones=len(st.session_state.get("_cone_detections", [])),
+                    )
+                    st.session_state["ai_preflight_result"] = ai_preflight
+                    st.session_state["ai_preflight_source"] = "openai" if ai_preflight else None
+                    if ai_preflight is not None:
+                        apply_upload_material_hint(uploaded.name, ai_preflight=ai_preflight)
+                except Exception as e:
+                    st.warning(f"AI preflight is unavailable for this upload: {e}")
+
             status.update(label="Video ready!", state="complete", expanded=False)
             st.session_state["_upload_processed"] = True
 
@@ -447,10 +524,18 @@ if uploaded is not None:
         "sidebar_material_select"
     )
     if material_for_recommendation:
+        ai_preflight = st.session_state.get("ai_preflight_result")
+        ai_profile_key = None
+        ai_notes = None
+        if ai_preflight is not None and ai_preflight.profile_confidence >= 0.70:
+            ai_profile_key = ai_preflight.processing_profile
+            ai_notes = list(ai_preflight.notes)
         _, profile_label, profile_notes = build_recommended_sidebar_overrides(
             material_for_recommendation,
             info,
             detections,
+            ai_profile_key=ai_profile_key,
+            ai_notes=ai_notes,
         )
         st.session_state["recommended_processing_profile"] = profile_label
         st.session_state["recommended_processing_notes"] = profile_notes

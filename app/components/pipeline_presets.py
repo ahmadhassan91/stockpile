@@ -108,9 +108,17 @@ def build_recommended_sidebar_overrides(
     material: str,
     video_info: dict[str, Any] | None,
     detections: list | None,
+    ai_profile_key: str | None = None,
+    ai_notes: list[str] | None = None,
 ) -> tuple[dict[str, Any], str, list[str]]:
     """Return sidebar-compatible overrides plus a user-facing profile label."""
-    profile_key, reasons = choose_processing_profile(material, video_info, detections)
+    if ai_profile_key in PROCESSING_PROFILE_OVERRIDES:
+        profile_key = ai_profile_key
+        reasons = list(ai_notes or [])
+        if not reasons:
+            reasons = ["AI preflight recommended this profile from the sampled upload frames."]
+    else:
+        profile_key, reasons = choose_processing_profile(material, video_info, detections)
     overrides = _material_defaults(material)
     overrides.update(PROCESSING_PROFILE_OVERRIDES[profile_key])
     return overrides, PROCESSING_PROFILE_LABELS[profile_key], reasons

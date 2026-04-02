@@ -13,10 +13,13 @@ def init_session_state():
         "settings_dialog_dismissed": False,
         "confirmed_settings_signature": None,
         "upload_inferred_material": None,
+        "upload_inferred_material_source": None,
         "pending_sidebar_setting_overrides": None,
         "sidebar_admin_mode": False,
         "recommended_processing_profile": None,
         "recommended_processing_notes": [],
+        "ai_preflight_result": None,
+        "ai_preflight_source": None,
     }
     for key, value in defaults.items():
         if key not in st.session_state:
