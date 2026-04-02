@@ -311,25 +311,24 @@ def calibrate_scale(
     except Exception as e:
         logger.warning("Camera-height calibration failed: %s", e)
 
-    # Choose best result
+    # Choose best result — always prefer projection when we have cone detections,
+    # since it uses real physical measurements (cone height in pixels + distance).
+    # Camera-height is only a fallback assumption (1.6m handheld) and introduces
+    # systematic bias when the actual camera height differs.
     if projection_result and camera_result:
-        # If they agree (within 30%), use projection (it uses actual measurements)
         ratio = projection_result.scale_factor / camera_result.scale_factor
-        if 0.7 < ratio < 1.4:
-            logger.info("Projection and camera-height agree (ratio %.2f), using projection", ratio)
-            return projection_result
-        else:
-            # They disagree — camera height is typically more reliable for
-            # walkarounds since cone keypoints are often on the background
-            logger.warning(
-                "Projection (%.4f) and camera-height (%.4f) disagree by %.1fx — "
-                "using camera-height (more reliable for walkarounds)",
+        if 0.5 < ratio < 2.0:
+            logger.info(
+                "Using projection scale %.4f (camera-height was %.4f, ratio %.2f)",
                 projection_result.scale_factor, camera_result.scale_factor, ratio,
             )
-            # Preserve cone positions from projection result
-            camera_result.cone_3d_positions = projection_result.cone_3d_positions
-            camera_result.num_cones_used = projection_result.num_cones_used
-            return camera_result
+        else:
+            logger.warning(
+                "Projection (%.4f) and camera-height (%.4f) disagree by %.1fx — "
+                "still using projection (physical measurement preferred over assumption)",
+                projection_result.scale_factor, camera_result.scale_factor, ratio,
+            )
+        return projection_result
     elif projection_result:
         return projection_result
     elif camera_result:

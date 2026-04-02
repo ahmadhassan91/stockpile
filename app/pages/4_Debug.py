@@ -6,6 +6,36 @@ import cv2
 import numpy as np
 import streamlit as st
 
+LOG_FILE = "/tmp/stockpile_app.log"
+
+
+def render_log_viewer(lines: int = 100, key_prefix: str = "debug"):
+    """Render a live log viewer section."""
+    st.subheader("Live Logs")
+    col_refresh, col_lines, col_clear = st.columns([1, 2, 1])
+    with col_lines:
+        lines = st.slider("Lines to show", 20, 500, lines, key=f"{key_prefix}_log_lines")
+    with col_clear:
+        if st.button("Clear log", key=f"{key_prefix}_clear_log"):
+            try:
+                open(LOG_FILE, "w").close()
+            except Exception:
+                pass
+    with col_refresh:
+        st.button("Refresh", key=f"{key_prefix}_refresh_log")
+
+    try:
+        with open(LOG_FILE) as f:
+            all_lines = f.readlines()
+        tail = all_lines[-lines:] if len(all_lines) > lines else all_lines
+        log_text = "".join(tail) if tail else "(no log entries yet)"
+    except FileNotFoundError:
+        log_text = "(log file not found — run the app first)"
+    except Exception as e:
+        log_text = f"(error reading log: {e})"
+
+    st.code(log_text, language=None)
+
 from stockpile.colmap_runner import get_reconstruction_stats
 from stockpile.cone_detection import ConeDetection, detect_cones, draw_cone_overlays
 from stockpile.config import PipelineConfig
@@ -98,6 +128,7 @@ else:
 # Section 4: Ground Plane Fit
 st.subheader("Ground Plane Fit")
 
+
 if result and result.pile_cloud:
     pile_pts = np.asarray(result.pile_cloud.points)
     if len(pile_pts) > 0:
@@ -110,3 +141,6 @@ if result and result.pile_cloud:
         st.write(f"**Ground points**: {len(ground_pts)}")
 else:
     st.info("No segmentation data available.")
+
+st.divider()
+render_log_viewer(lines=150, key_prefix="debug")

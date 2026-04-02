@@ -112,6 +112,11 @@ class Pipeline:
             self._report("colmap_reconstruction", 0, "Running COLMAP sparse reconstruction...")
             self._check_cancel()
 
+            # Clear stale COLMAP workspace so we always do a fresh reconstruction
+            if self.config.colmap_dir.exists():
+                shutil.rmtree(self.config.colmap_dir)
+            self.config.colmap_dir.mkdir(parents=True)
+
             model_dir = run_colmap_reconstruction(
                 self.config.images_dir,
                 self.config.colmap_dir,

@@ -2,9 +2,24 @@
 
 import threading
 import time
+from pathlib import Path
 from queue import Queue
 
 import streamlit as st
+
+LOG_FILE = "/tmp/stockpile_app.log"
+
+
+def _read_log_tail(lines: int = 60) -> str:
+    try:
+        with open(LOG_FILE) as f:
+            all_lines = f.readlines()
+        tail = all_lines[-lines:] if len(all_lines) > lines else all_lines
+        return "".join(tail) if tail else "(no log entries yet)"
+    except FileNotFoundError:
+        return "(log file not found)"
+    except Exception as e:
+        return f"(error: {e})"
 
 from stockpile.config import PipelineConfig
 from stockpile.pipeline import Pipeline, PipelineResult
@@ -90,6 +105,9 @@ if st.session_state.get("pipeline_running", False):
     stages = list(STAGE_LABELS.keys())
     current_stage_idx = 0
 
+    log_box = st.expander("Live logs", expanded=False)
+    log_placeholder = log_box.empty()
+
     while True:
         # Check for messages
         try:
@@ -120,6 +138,9 @@ if st.session_state.get("pipeline_running", False):
 
         except Exception:
             pass
+
+        # Update log tail every cycle
+        log_placeholder.code(_read_log_tail(60), language=None)
 
         # Check if thread is still alive
         thread = st.session_state.get("pipeline_thread")

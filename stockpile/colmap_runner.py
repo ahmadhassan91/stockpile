@@ -1,6 +1,7 @@
 """COLMAP subprocess wrapper and binary file parsers."""
 
 import logging
+import os
 import struct
 import subprocess
 from collections import namedtuple
@@ -68,6 +69,32 @@ class ColmapPoint3D:
         self.point2d_idxs = point2d_idxs
 
 
+def _subsample_images_dir(images_dir: Path, max_frames: int) -> Path:
+    """If images_dir has more than max_frames images, copy an evenly-spaced
+    subset into a sibling directory and return that path instead."""
+    import shutil
+    all_images = sorted(images_dir.glob("*.jpg")) + sorted(images_dir.glob("*.png"))
+    if len(all_images) <= max_frames:
+        return images_dir
+
+    step = len(all_images) / max_frames
+    selected = [all_images[int(i * step)] for i in range(max_frames)]
+
+    subset_dir = images_dir.parent / "images_colmap_subset"
+    if subset_dir.exists():
+        shutil.rmtree(subset_dir)
+    subset_dir.mkdir(parents=True)
+
+    for img in selected:
+        shutil.copy2(img, subset_dir / img.name)
+
+    logger.info(
+        "Subsampled %d → %d frames for COLMAP (step=%.1f)",
+        len(all_images), len(selected), step,
+    )
+    return subset_dir
+
+
 def run_colmap_reconstruction(
     images_dir: Path,
     workspace_dir: Path,
@@ -79,18 +106,22 @@ def run_colmap_reconstruction(
     workspace_dir = Path(workspace_dir)
     workspace_dir.mkdir(parents=True, exist_ok=True)
 
+    # Subsample frames to avoid over-dense central reconstruction
+    images_dir = _subsample_images_dir(Path(images_dir), config.max_colmap_frames)
+
     sparse_dir = workspace_dir / "sparse"
     database_path = workspace_dir / "database.db"
 
     cmd = [
         config.colmap_binary,
         "automatic_reconstructor",
-        "--workspace_path", str(workspace_dir),
-        "--image_path", str(images_dir),
+        "--workspace_path", str(workspace_dir.resolve()),
+        "--image_path", str(images_dir.resolve()),
         "--data_type", "video",
         "--quality", config.quality,
         "--single_camera", "1" if config.single_camera else "0",
-        "--dense", "0",  # No dense reconstruction (no CUDA on macOS)
+        "--dense", "0",
+        "--use_gpu", "1" if config.use_gpu else "0",
     ]
 
     logger.info("Running COLMAP: %s", " ".join(cmd))
@@ -103,6 +134,7 @@ def run_colmap_reconstruction(
             capture_output=True,
             text=True,
             timeout=14400,  # 4 hours timeout
+            env={**os.environ, "QT_QPA_PLATFORM": "offscreen"},
         )
 
         if result.returncode != 0:
@@ -151,7 +183,8 @@ def export_to_ply(
         "--output_type", "PLY",
     ]
 
-    result = subprocess.run(cmd, capture_output=True, text=True, timeout=120)
+    result = subprocess.run(cmd, capture_output=True, text=True, timeout=120,
+                            env={**os.environ, "QT_QPA_PLATFORM": "offscreen"})
     if result.returncode != 0:
         raise RuntimeError(f"PLY export failed: {result.stderr}")
 

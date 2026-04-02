@@ -112,19 +112,53 @@ uploaded = st.file_uploader(
 )
 
 if uploaded is not None:
-    # Save to temp file
-    suffix = Path(uploaded.name).suffix
-    tmp = tempfile.NamedTemporaryFile(delete=False, suffix=suffix)
-    tmp.write(uploaded.read())
-    tmp.flush()
-
     # Reset confirmation each time a new file is dropped
-    if st.session_state.get("last_uploaded_name") != uploaded.name:
+    is_new_file = st.session_state.get("last_uploaded_name") != uploaded.name
+    if is_new_file:
         st.session_state["material_confirmed"] = False
         st.session_state["dialog_dismissed"] = False
         st.session_state["last_uploaded_name"] = uploaded.name
+        st.session_state["_upload_processed"] = False
+        st.session_state["video_path"] = None
 
-    st.session_state.video_path = tmp.name
+    # ── Write + process only once per uploaded file ────────────────────────
+    if not st.session_state.get("_upload_processed"):
+        suffix = Path(uploaded.name).suffix
+        tmp = tempfile.NamedTemporaryFile(delete=False, suffix=suffix)
+        with st.status("Processing uploaded video...", expanded=True) as status:
+            st.write("Saving video to disk...")
+            tmp.write(uploaded.read())
+            tmp.flush()
+            st.session_state.video_path = tmp.name
+
+            st.write("Reading video metadata...")
+            try:
+                info = get_video_info(tmp.name)
+                st.session_state["_video_info"] = info
+            except Exception as e:
+                st.error(f"Could not read video info: {e}")
+
+            st.write("Extracting first frame...")
+            frame = None
+            try:
+                frame = get_first_frame(tmp.name)
+                st.session_state["_first_frame"] = frame
+            except Exception as e:
+                st.error(f"Could not read first frame: {e}")
+
+            st.write("Running cone detection...")
+            if frame is not None:
+                try:
+                    detections = detect_cones(frame, config.cone_detection)
+                    st.session_state["_cone_detections"] = detections
+                except Exception as e:
+                    st.error(f"Cone detection failed: {e}")
+
+            status.update(label="Video ready!", state="complete", expanded=False)
+            st.session_state["_upload_processed"] = True
+        info = st.session_state.get("_video_info")
+        frame = st.session_state.get("_first_frame")
+        detections = st.session_state.get("_cone_detections", [])
 
     # Show the dialog if material hasn't been confirmed or dismissed yet
     if not st.session_state.get("material_confirmed") and not st.session_state.get("dialog_dismissed"):
@@ -157,23 +191,21 @@ if uploaded is not None:
                 st.rerun()
 
     # ── Video Info ─────────────────────────────────────────────────────────
-    try:
-        info = get_video_info(tmp.name)
+    info = st.session_state.get("_video_info")
+    if info:
         col1, col2, col3, col4 = st.columns(4)
         col1.metric("Duration", f"{info['duration']:.1f}s")
         col2.metric("FPS", f"{info['fps']:.1f}")
         col3.metric("Resolution", f"{info['width']}x{info['height']}")
         estimated_frames = int(info["duration"] / config.frame_extraction.interval_sec)
         col4.metric("Est. Frames", str(min(estimated_frames, config.frame_extraction.max_frames)))
-    except Exception as e:
-        st.error(f"Could not read video info: {e}")
 
     # ── First Frame Preview + Cone Detection ───────────────────────────────
-    st.subheader("First Frame Preview")
-    try:
-        frame = get_first_frame(tmp.name)
-        detections = detect_cones(frame, config.cone_detection)
+    frame = st.session_state.get("_first_frame")
+    detections = st.session_state.get("_cone_detections", [])
 
+    if frame is not None:
+        st.subheader("First Frame Preview")
         col1, col2 = st.columns(2)
         with col1:
             st.image(cv2.cvtColor(frame, cv2.COLOR_BGR2RGB), caption="Original Frame")
@@ -198,8 +230,6 @@ if uploaded is not None:
                 f"✅ Detected **{len(detections)} cone(s)** in the first frame. "
                 "Scale calibration should work correctly. Proceed to the **Processing** page."
             )
-    except Exception as e:
-        st.error(f"Could not read first frame: {e}")
 
 elif st.session_state.get("video_path"):
     confirmed_material = st.session_state.get("selected_material", PRESET_NAMES[0])

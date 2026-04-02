@@ -32,11 +32,13 @@ class ConeDetectionConfig:
 
 @dataclass
 class ColmapConfig:
-    colmap_binary: str = "colmap"
+    colmap_binary: str = "colmap-gpu"
     quality: str = "medium"  # low, medium, high
     single_camera: bool = True
     camera_model: str = "SIMPLE_RADIAL"
     use_sequential_matching: bool = True
+    use_gpu: bool = True
+    max_colmap_frames: int = 150  # subsample frames before COLMAP to avoid dense-center bias
 
 
 @dataclass

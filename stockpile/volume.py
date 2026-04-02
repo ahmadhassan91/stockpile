@@ -63,9 +63,13 @@ def volume_grid_integration(
 
     x, y, z = points[:, 0], points[:, 1], points[:, 2]
 
-    # Create grid
-    x_min, x_max = x.min(), x.max()
-    y_min, y_max = y.min(), y.max()
+    # Estimate pile height to compute base extension (angle of repose ~37°)
+    max_z = float(z.max()) if len(z) > 0 else 0.0
+    base_extension_m = max(resolution * 5, max_z * 1.33)  # tan(37°) ≈ 0.75 → base = height / 0.75
+
+    # Extend grid beyond data extent so virtual boundary points fall within it
+    x_min, x_max = x.min() - base_extension_m, x.max() + base_extension_m
+    y_min, y_max = y.min() - base_extension_m, y.max() + base_extension_m
 
     x_bins = np.arange(x_min, x_max + resolution, resolution)
     y_bins = np.arange(y_min, y_max + resolution, resolution)
@@ -101,6 +105,38 @@ def volume_grid_integration(
         known_ij = np.argwhere(valid)
         known_vals = height_grid[valid]
 
+        # Expand pile data with virtual zero-height boundary points at the
+        # expected base of the pile. A natural aggregate heap has an angle of
+        # repose of ~37°, so the base extends (max_height / tan(37°)) meters
+        # beyond where we last see pile points. This ensures the grid
+        # integration captures the full base, not just the COLMAP-visible top.
+        max_height = float(np.max(known_vals)) if len(known_vals) > 0 else 0.0
+        base_extension_cells = max(5, int(max_height * 1.33 / resolution))  # tan(37°) ≈ 0.75
+
+        boundary_ij = []
+        boundary_vals = []
+        try:
+            hull = ConvexHull(known_ij.astype(float))
+            hull_pts = known_ij[hull.vertices].astype(float)
+            centroid = hull_pts.mean(axis=0)
+            for pt in hull_pts:
+                direction = pt - centroid
+                norm = np.linalg.norm(direction)
+                if norm < 1e-8:
+                    continue
+                boundary_pt = pt + direction / norm * base_extension_cells
+                boundary_ij.append(boundary_pt)
+                boundary_vals.append(0.0)
+        except Exception:
+            pass
+
+        if boundary_ij:
+            aug_ij = np.vstack([known_ij, boundary_ij])
+            aug_vals = np.concatenate([known_vals, boundary_vals])
+        else:
+            aug_ij = known_ij
+            aug_vals = known_vals
+
         # All cell coordinates
         all_i, all_j = np.meshgrid(
             np.arange(height_grid.shape[0]),
@@ -109,30 +145,16 @@ def volume_grid_integration(
         )
         all_ij = np.column_stack([all_i.ravel(), all_j.ravel()])
 
-        # Step 1: linear interpolation (accurate inside convex hull of data)
-        interpolated = griddata(known_ij, known_vals, all_ij, method="linear")
+        # Step 1: linear interpolation using augmented points (tapers to 0 at base)
+        interpolated = griddata(aug_ij, aug_vals, all_ij, method="linear")
         interpolated = interpolated.reshape(height_grid.shape)
 
-        # Step 2: nearest-neighbour for any remaining NaNs (boundary cells)
-        # Use nearest rather than zeroing — this avoids artificially collapsing
-        # the pile periphery to 0 and losing edge volume.
+        # Step 2: nearest-neighbour for any remaining NaNs outside augmented hull
         still_nan = np.isnan(interpolated)
         if still_nan.any():
-            nearest = griddata(known_ij, known_vals, all_ij, method="nearest")
+            nearest = griddata(aug_ij, aug_vals, all_ij, method="nearest")
             nearest = nearest.reshape(height_grid.shape)
             interpolated[still_nan] = nearest[still_nan]
-
-        # Step 3: only keep cells that are inside the convex hull of XY data
-        # (prevents extrapolating FAR outside the actual pile footprint)
-        if len(known_ij) >= 3:
-            try:
-                hull = ConvexHull(known_ij)
-                hull_pts = known_ij[hull.vertices]
-                path = MplPath(hull_pts)
-                inside = path.contains_points(all_ij).reshape(height_grid.shape)
-                interpolated = np.where(inside, interpolated, 0.0)
-            except Exception:
-                pass  # If hull fails, keep all interpolated values
 
         height_grid_filled = np.maximum(interpolated, 0)
     else:

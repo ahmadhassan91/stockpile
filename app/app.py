@@ -1,6 +1,27 @@
 """Streamlit entry point for the Stockpile Weight Estimation app."""
 
+import logging
+import os
+
 import streamlit as st
+
+# ── Logging setup ──────────────────────────────────────────────────────────────
+LOG_FILE = "/tmp/stockpile_app.log"
+
+def _setup_logging():
+    root = logging.getLogger()
+    if any(isinstance(h, logging.FileHandler) and getattr(h, 'baseFilename', '') == LOG_FILE
+           for h in root.handlers):
+        return  # already set up
+    fmt = logging.Formatter("%(asctime)s [%(levelname)s] %(name)s: %(message)s",
+                            datefmt="%H:%M:%S")
+    fh = logging.FileHandler(LOG_FILE)
+    fh.setFormatter(fmt)
+    fh.setLevel(logging.DEBUG)
+    root.setLevel(logging.DEBUG)
+    root.addHandler(fh)
+
+_setup_logging()
 
 st.set_page_config(
     page_title="Stockpile Weight Estimator",
