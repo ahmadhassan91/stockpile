@@ -38,7 +38,7 @@ class ColmapConfig:
     camera_model: str = "SIMPLE_RADIAL"
     use_sequential_matching: bool = True
     use_gpu: bool = True
-    max_colmap_frames: int = 150  # subsample frames before COLMAP to avoid dense-center bias
+    max_colmap_frames: int = 300  # use more frames on GPU-backed deployments for better pile coverage
 
 
 @dataclass
@@ -57,6 +57,7 @@ class GroundPlaneConfig:
     ransac_n: int = 3
     ransac_iterations: int = 1000
     above_ground_threshold: float = 0.10  # meters — raised from 0.05 to reduce ground noise misclassification
+    cone_crop_margin_m: float = 0.75
     statistical_nb_neighbors: int = 20
     statistical_std_ratio: float = 2.0
 
@@ -65,6 +66,7 @@ class GroundPlaneConfig:
 class VolumeConfig:
     grid_resolution: float = 0.05  # meters per cell for 2.5D method
     alpha: float = 0.3  # alpha shape parameter
+    footprint_buffer_m: float = 0.75
     recommended_min_grid_occupancy_pct: float = 3.0
     recommended_max_grid_to_hull_ratio: float = 4.0
 

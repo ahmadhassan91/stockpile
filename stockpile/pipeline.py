@@ -337,7 +337,11 @@ class Pipeline:
             self._report("volume_computation", 0, "Computing volume...")
             self._check_cancel()
 
-            vol = compute_volume(gp_result.pile_cloud, self.config.volume)
+            vol = compute_volume(
+                gp_result.pile_cloud,
+                self.config.volume,
+                result.cone_3d_positions if result.cone_3d_positions else None,
+            )
             result.volume = vol
             result.weight_kg = vol.recommended_m3 * self.config.material_density
             self._assess_measurement_quality(result)
