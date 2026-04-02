@@ -62,6 +62,28 @@ def _mad_inlier_mask(values: np.ndarray, mad_multiplier: float) -> np.ndarray:
     return mask
 
 
+def _select_cone_position_points(
+    matched_positions: list[np.ndarray],
+    matched_distances: list[float],
+    percentile: float,
+    min_points: int,
+) -> np.ndarray:
+    """Prefer the nearest matched 3D points when estimating a cone centroid."""
+    points = np.asarray(matched_positions, dtype=float)
+    distances = np.asarray(matched_distances, dtype=float)
+    if len(points) == 0:
+        return points
+
+    cutoff = float(np.percentile(distances, percentile))
+    subset = points[distances <= cutoff]
+    if len(subset) >= min_points:
+        return subset
+
+    keep = min(len(points), max(min_points, int(np.ceil(len(points) * percentile / 100.0))))
+    nearest_indices = np.argsort(distances)[:keep]
+    return points[nearest_indices]
+
+
 def calibrate_scale_projection(
     cone_detections: dict[str, list[ConeDetection]],
     images: dict[int, ColmapImage],
@@ -143,9 +165,16 @@ def calibrate_scale_projection(
             real_height_colmap = pixel_height * close_dist / focal
             scale = config.known_cone_height_m / real_height_colmap
 
+            cone_points = _select_cone_position_points(
+                matched_positions,
+                matched_distances,
+                percentile=config.cone_position_percentile,
+                min_points=config.cone_position_min_points,
+            )
+
             per_frame_scales.append(scale)
-            # Store median 3D position as cone location
-            cone_positions.append(np.median(matched_positions, axis=0))
+            # Store a trimmed 3D position estimate as the cone location.
+            cone_positions.append(np.median(cone_points, axis=0))
 
     if not per_frame_scales:
         raise ValueError("No cone-camera projection matches found for calibration")
@@ -180,7 +209,16 @@ def calibrate_scale_projection(
 
     # Deduplicate cone positions with a scene-scale radius, since the median
     # 3D point inside each bbox can drift noticeably between frames.
-    unique_positions = _deduplicate_positions(list(filtered_positions), threshold=config.dbscan_eps)
+    unique_positions = _deduplicate_positions(
+        list(filtered_positions),
+        threshold=config.dbscan_eps,
+        min_samples=config.dbscan_min_samples,
+    )
+    if len(filtered_positions) >= config.min_cones_for_confidence and len(unique_positions) < 2:
+        notes.append(
+            "Many cone detections collapsed into a single 3D reference, which usually means only one cone "
+            "triangulated cleanly enough for scale calibration."
+        )
 
     logger.info(
         "Projection-based scale: %.4f m/unit (from %d/%d frame-cone pairs, "
@@ -204,21 +242,38 @@ def calibrate_scale_projection(
 def _deduplicate_positions(
     positions: list[np.ndarray],
     threshold: float,
+    min_samples: int,
 ) -> list[np.ndarray]:
     """Merge nearby 3D positions into unique cone locations."""
     if not positions:
         return []
 
-    unique = [positions[0]]
-    for pos in positions[1:]:
-        is_new = True
-        for u in unique:
-            if np.linalg.norm(pos - u) < threshold:
-                is_new = False
+    clusters: list[np.ndarray] = []
+    counts: list[int] = []
+    for pos in positions:
+        matched_index = None
+        for idx, centroid in enumerate(clusters):
+            if np.linalg.norm(pos - centroid) < threshold:
+                matched_index = idx
                 break
-        if is_new:
-            unique.append(pos)
-    return unique
+        if matched_index is None:
+            clusters.append(np.asarray(pos, dtype=float).copy())
+            counts.append(1)
+            continue
+
+        counts[matched_index] += 1
+        clusters[matched_index] = clusters[matched_index] + (
+            np.asarray(pos, dtype=float) - clusters[matched_index]
+        ) / counts[matched_index]
+    kept_clusters = [
+        cluster for cluster, count in zip(clusters, counts)
+        if count >= min_samples
+    ]
+    if kept_clusters:
+        return kept_clusters
+
+    dominant_index = int(np.argmax(counts))
+    return [clusters[dominant_index]]
 
 
 def calibrate_scale_from_camera_height(
