@@ -13,6 +13,7 @@ def init_session_state():
         "settings_dialog_dismissed": False,
         "confirmed_settings_signature": None,
         "upload_inferred_material": None,
+        "pending_sidebar_setting_overrides": None,
     }
     for key, value in defaults.items():
         if key not in st.session_state:

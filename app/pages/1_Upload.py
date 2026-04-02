@@ -15,9 +15,9 @@ import sys
 sys.path.insert(0, str(Path(__file__).parent.parent))
 from components.parameter_sidebar import (
     build_pipeline_config_from_state,
-    get_pipeline_setting_signature,
-    persist_pipeline_selection_metadata,
+    queue_sidebar_setting_overrides,
     render_parameter_sidebar,
+    SIDEBAR_SETTING_KEYS,
 )
 from components.session_init import init_session_state
 
@@ -49,14 +49,34 @@ def seed_settings_dialog_from_sidebar(force: bool = False):
 
 def apply_dialog_settings():
     """Apply the confirmed dialog values back into the sidebar state."""
-    for dialog_key, sidebar_key in SETTING_KEY_MAP.items():
-        st.session_state[sidebar_key] = st.session_state.get(dialog_key)
+    sidebar_overrides = {
+        sidebar_key: st.session_state.get(dialog_key)
+        for dialog_key, sidebar_key in SETTING_KEY_MAP.items()
+    }
+    queue_sidebar_setting_overrides(sidebar_overrides)
 
-    persist_pipeline_selection_metadata()
-    st.session_state.pipeline_config = build_pipeline_config_from_state()
+    material = sidebar_overrides["sidebar_material_select"]
+    if material == "Custom":
+        density = float(sidebar_overrides["sidebar_density_input"])
+        density_display = f"{density:.0f} kg/m³"
+    else:
+        density = float(DENSITY_PRESETS[material])
+        density_display = f"{density/1000:.2f} MT/m³ (max)"
+
+    st.session_state["manual_scale_override"] = (
+        float(sidebar_overrides["sidebar_manual_scale_value"])
+        if sidebar_overrides.get("sidebar_manual_scale_enabled")
+        else None
+    )
+    st.session_state["selected_material"] = material
+    st.session_state["selected_density"] = density
+    st.session_state["selected_density_display"] = density_display
     st.session_state.settings_confirmed = True
     st.session_state.settings_dialog_dismissed = False
-    st.session_state.confirmed_settings_signature = get_pipeline_setting_signature()
+    st.session_state.confirmed_settings_signature = tuple(
+        (key, sidebar_overrides.get(key))
+        for key in SIDEBAR_SETTING_KEYS
+    )
 
 
 def infer_material_from_filename(filename: str) -> str | None:
@@ -79,9 +99,8 @@ def apply_upload_material_hint(filename: str):
     if inferred_material is None:
         return
 
-    st.session_state["sidebar_material_select"] = inferred_material
-    st.session_state["sidebar_density_input"] = float(DENSITY_PRESETS[inferred_material])
-    persist_pipeline_selection_metadata()
+    st.session_state["dialog_material_select"] = inferred_material
+    st.session_state["dialog_density_input"] = float(DENSITY_PRESETS[inferred_material])
 
 
 def build_upload_setting_notes(video_info: dict | None, detections: list | None):
@@ -323,8 +342,8 @@ if uploaded is not None:
         st.session_state["last_uploaded_name"] = uploaded.name
         st.session_state["_upload_processed"] = False
         st.session_state["video_path"] = None
-        apply_upload_material_hint(uploaded.name)
         seed_settings_dialog_from_sidebar(force=True)
+        apply_upload_material_hint(uploaded.name)
 
     # ── Write + process only once per uploaded file ────────────────────────
     if not st.session_state.get("_upload_processed"):

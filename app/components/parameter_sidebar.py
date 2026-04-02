@@ -22,12 +22,33 @@ DEFAULT_SETTING_STATE = {
 }
 
 SIDEBAR_SETTING_KEYS = tuple(DEFAULT_SETTING_STATE.keys())
+PENDING_SIDEBAR_OVERRIDES_KEY = "pending_sidebar_setting_overrides"
 
 
 def ensure_pipeline_setting_state():
     """Seed Streamlit session state with stable pipeline defaults."""
     for key, value in DEFAULT_SETTING_STATE.items():
         if key not in st.session_state:
+            st.session_state[key] = value
+
+
+def queue_sidebar_setting_overrides(overrides: dict):
+    """Queue sidebar widget value updates for the next safe rerun."""
+    pending = dict(st.session_state.get(PENDING_SIDEBAR_OVERRIDES_KEY, {}))
+    for key, value in overrides.items():
+        if key in DEFAULT_SETTING_STATE:
+            pending[key] = value
+    st.session_state[PENDING_SIDEBAR_OVERRIDES_KEY] = pending
+
+
+def apply_pending_sidebar_setting_overrides():
+    """Apply queued sidebar widget updates before widgets are instantiated."""
+    pending = st.session_state.pop(PENDING_SIDEBAR_OVERRIDES_KEY, None)
+    if not pending:
+        return
+    ensure_pipeline_setting_state()
+    for key, value in pending.items():
+        if key in DEFAULT_SETTING_STATE:
             st.session_state[key] = value
 
 
@@ -84,6 +105,7 @@ def get_pipeline_setting_signature() -> tuple:
 def render_parameter_sidebar() -> PipelineConfig:
     """Render the parameter sidebar and return a PipelineConfig."""
     ensure_pipeline_setting_state()
+    apply_pending_sidebar_setting_overrides()
 
     st.sidebar.header("⚙️ Pipeline Settings")
 
