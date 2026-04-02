@@ -53,6 +53,9 @@ if result.calibration:
     cal = result.calibration
     scale_factor = result.scale_factor_m_per_unit or cal.scale_factor
     conf_pct = cal.confidence * 100
+    camera_crosscheck_min_conf = 0.20
+    if config is not None:
+        camera_crosscheck_min_conf = config.scale_calibration.min_camera_height_confidence_for_crosscheck
 
     # Classify confidence level
     if conf_pct >= 70:
@@ -97,7 +100,16 @@ if result.calibration:
                     "Cones may have been partially occluded or the wrong size was configured."
                 )
 
-    if cal.scale_disagreement_ratio:
+    if (
+        cal.camera_height_scale_factor is not None
+        and cal.camera_height_confidence is not None
+        and cal.camera_height_confidence < camera_crosscheck_min_conf
+    ):
+        st.caption(
+            f"Auxiliary camera-height cross-check was skipped "
+            f"(confidence {cal.camera_height_confidence:.0%} < {camera_crosscheck_min_conf:.0%})."
+        )
+    elif cal.scale_disagreement_ratio:
         st.caption(
             f"Cross-check ratio: {cal.scale_disagreement_ratio:.2f}x "
             f"(projection {cal.projection_scale_factor:.4f} vs camera-height {cal.camera_height_scale_factor:.4f} m/unit)"
@@ -107,6 +119,11 @@ if result.calibration:
                 "⚠️ The cone-based scale and the camera-height cross-check disagree materially. "
                 "This is a strong signal that the geometry or cone matches need review."
             )
+
+    if cal.notes:
+        with st.expander("Calibration notes"):
+            for note in cal.notes:
+                st.write(f"- {note}")
 else:
     if result.scale_source == "manual_override" and result.scale_factor_m_per_unit is not None:
         st.info(

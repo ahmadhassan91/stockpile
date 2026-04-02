@@ -47,19 +47,23 @@ def render_parameter_sidebar() -> PipelineConfig:
 
     # ── Scale Calibration ─────────────────────────────────────────────────
     st.sidebar.subheader("📏 Scale Calibration")
-    
-    default_cone_height = 0.85 if material == "Backfill 0\u201375 mm" else 0.75
-    default_camera_height = 2.4 if material == "Backfill 0\u201375 mm" else 1.6
-    
+
+    if "sidebar_cone_height" not in st.session_state:
+        st.session_state["sidebar_cone_height"] = 0.75
+    if "sidebar_camera_height" not in st.session_state:
+        st.session_state["sidebar_camera_height"] = 1.6
+
     cone_height = st.sidebar.number_input(
         "Cone height (m)",
-        value=default_cone_height, min_value=0.1, max_value=2.0, step=0.05,
+        min_value=0.1, max_value=2.0, step=0.05,
+        key="sidebar_cone_height",
         help="Height of the traffic cones placed around the stockpile. "
              "Standard cone = 0.75 m. Mini cone = 0.50 m. Measure yours if unsure.",
     )
     camera_height = st.sidebar.number_input(
         "Camera height above ground (m)",
-        value=default_camera_height, min_value=0.5, max_value=3.0, step=0.1,
+        min_value=0.5, max_value=3.0, step=0.1,
+        key="sidebar_camera_height",
         help="Height of the phone/camera during filming. "
              "Used as fallback when cone detection fails.",
     )

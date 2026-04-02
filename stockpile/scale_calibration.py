@@ -45,6 +45,23 @@ def _camera_center(image: ColmapImage) -> np.ndarray:
     return -R.T @ image.tvec
 
 
+def _mad_inlier_mask(values: np.ndarray, mad_multiplier: float) -> np.ndarray:
+    """Return a robust inlier mask using median absolute deviation."""
+    if len(values) < 5:
+        return np.ones(len(values), dtype=bool)
+
+    median = float(np.median(values))
+    mad = float(np.median(np.abs(values - median)))
+    if mad < 1e-9:
+        return np.ones(len(values), dtype=bool)
+
+    robust_z = 0.6745 * (values - median) / mad
+    mask = np.abs(robust_z) <= mad_multiplier
+    if int(mask.sum()) < 3:
+        return np.ones(len(values), dtype=bool)
+    return mask
+
+
 def calibrate_scale_projection(
     cone_detections: dict[str, list[ConeDetection]],
     images: dict[int, ColmapImage],
@@ -68,6 +85,7 @@ def calibrate_scale_projection(
     name_to_image = {img.name: img for img in images.values()}
     per_frame_scales = []
     cone_positions = []
+    notes: list[str] = []
 
     for frame_name, detections in cone_detections.items():
         colmap_img = name_to_image.get(frame_name)
@@ -132,37 +150,54 @@ def calibrate_scale_projection(
     if not per_frame_scales:
         raise ValueError("No cone-camera projection matches found for calibration")
 
+    raw_scales = np.asarray(per_frame_scales, dtype=float)
+    raw_positions = np.asarray(cone_positions, dtype=float)
+    inlier_mask = _mad_inlier_mask(raw_scales, config.projection_outlier_mad_multiplier)
+    if not np.all(inlier_mask):
+        dropped = int((~inlier_mask).sum())
+        notes.append(f"Discarded {dropped} projection scale outlier(s) before computing the final scale.")
+        logger.info(
+            "Projection scale trimming removed %d / %d outlier samples",
+            dropped,
+            len(raw_scales),
+        )
+    filtered_scales = raw_scales[inlier_mask]
+    filtered_positions = raw_positions[inlier_mask] if len(raw_positions) else raw_positions
+
     # Use median across all frames for robustness
-    scale_factor = float(np.median(per_frame_scales))
+    scale_factor = float(np.median(filtered_scales))
 
     # Confidence based on consistency and sample count
-    if len(per_frame_scales) >= 3:
-        cv = np.std(per_frame_scales) / np.mean(per_frame_scales)
+    if len(filtered_scales) >= 3:
+        cv = np.std(filtered_scales) / np.mean(filtered_scales)
         consistency = max(0.0, 1.0 - cv)
     else:
         consistency = 0.5
 
-    count_factor = min(1.0, len(per_frame_scales) / 10)  # more frames = more confident
-    confidence = consistency * count_factor
+    count_factor = min(1.0, len(filtered_scales) / 10)  # more frames = more confident
+    retention_factor = len(filtered_scales) / len(raw_scales)
+    confidence = consistency * count_factor * retention_factor
 
-    # Deduplicate cone positions (cluster nearby ones)
-    unique_positions = _deduplicate_positions(cone_positions, threshold=np.median(per_frame_scales) * 0.5)
+    # Deduplicate cone positions with a scene-scale radius, since the median
+    # 3D point inside each bbox can drift noticeably between frames.
+    unique_positions = _deduplicate_positions(list(filtered_positions), threshold=config.dbscan_eps)
 
     logger.info(
-        "Projection-based scale: %.4f m/unit (from %d frame-cone pairs, "
+        "Projection-based scale: %.4f m/unit (from %d/%d frame-cone pairs, "
         "%d unique cones, confidence=%.2f)",
-        scale_factor, len(per_frame_scales), len(unique_positions), confidence,
+        scale_factor, len(filtered_scales), len(raw_scales), len(unique_positions), confidence,
     )
 
     return CalibrationResult(
         scale_factor=scale_factor,
         confidence=confidence,
         num_cones_used=len(unique_positions),
-        per_cone_scales=per_frame_scales,
+        per_cone_scales=list(filtered_scales),
         cone_3d_positions=unique_positions,
         selected_method="projection",
         projection_scale_factor=scale_factor,
         projection_confidence=confidence,
+        notes=notes,
     )
 
 
@@ -189,8 +224,8 @@ def _deduplicate_positions(
 def calibrate_scale_from_camera_height(
     images: dict[int, ColmapImage],
     points3d: dict[int, ColmapPoint3D],
-    assumed_camera_height_m: float = 1.6,
-    random_seed: int = 7,
+    config: ScaleCalibrationConfig,
+    cone_positions: list[np.ndarray] | None = None,
 ) -> CalibrationResult:
     """Estimate scale using camera height above the ground plane.
 
@@ -212,9 +247,10 @@ def calibrate_scale_from_camera_height(
     pcd.points = o3d.utility.Vector3dVector(all_xyz)
 
     best_scale = None
-    best_consistency = 0
+    best_score = -1.0
+    best_metrics: dict[str, float | int | str | None] | None = None
 
-    o3d.utility.random.seed(random_seed)
+    o3d.utility.random.seed(config.random_seed)
 
     for axis in range(3):
         for use_low in [True, False]:
@@ -248,43 +284,92 @@ def calibrate_scale_from_camera_height(
 
             # Cameras should be consistently on one side (above ground)
             # and the ground points should be near zero
-            cam_median = np.median(np.abs(cam_dists))
+            cam_abs = np.abs(cam_dists)
+            cam_median = np.median(cam_abs)
             ground_std = np.std(ground_dists)
 
             if cam_median < 0.01:  # cameras too close to plane
                 continue
 
-            scale_est = assumed_camera_height_m / cam_median
+            scale_est = config.assumed_camera_height_m / cam_median
 
-            # Consistency: cameras should have similar heights
-            cam_cv = np.std(np.abs(cam_dists)) / cam_median if cam_median > 0 else 999
-            consistency = max(0.0, 1.0 - cam_cv)
+            # Scale-invariant plane score:
+            # - camera heights should be consistent
+            # - candidate ground points should lie close to the plane
+            # - cone centers should sit at a broadly similar offset from the plane
+            cam_cv = np.std(cam_abs) / cam_median if cam_median > 0 else 999
+            ground_std_rel = ground_std / cam_median if cam_median > 0 else 999
+            camera_score = 1.0 / (1.0 + cam_cv)
+            ground_score = 1.0 / (1.0 + (ground_std_rel / max(config.camera_height_ground_std_rel_max, 1e-6)))
 
-            if consistency > best_consistency:
-                best_consistency = consistency
+            cone_cv = None
+            cone_score = 1.0
+            if cone_positions and len(cone_positions) >= 3:
+                cone_arr = np.asarray(cone_positions)
+                cone_abs = np.abs((cone_arr @ np.array([a, b, c]) + d) / norm)
+                cone_median = np.median(cone_abs)
+                if cone_median > 1e-6:
+                    cone_cv = float(np.std(cone_abs) / cone_median)
+                    cone_score = 1.0 / (
+                        1.0 + (cone_cv / max(config.camera_height_cone_cv_max, 1e-6))
+                    )
+
+            candidate_score = camera_score * ground_score * cone_score
+
+            if candidate_score > best_score:
+                best_score = candidate_score
                 best_scale = scale_est
+                best_metrics = {
+                    "axis": axis,
+                    "subset": "low" if use_low else "high",
+                    "cam_cv": float(cam_cv),
+                    "ground_std_rel": float(ground_std_rel),
+                    "cone_cv": cone_cv,
+                    "score": float(candidate_score),
+                }
 
                 logger.info(
                     "Camera-height axis %d (%s): scale=%.4f, cam_height=%.4f units, "
-                    "consistency=%.2f",
-                    axis, "low" if use_low else "high", scale_est, cam_median, consistency,
+                    "cam_cv=%.2f, ground_rel_std=%.3f, cone_cv=%s, score=%.2f",
+                    axis,
+                    "low" if use_low else "high",
+                    scale_est,
+                    cam_median,
+                    cam_cv,
+                    ground_std_rel,
+                    "n/a" if cone_cv is None else f"{cone_cv:.2f}",
+                    candidate_score,
                 )
 
     if best_scale is None:
         raise ValueError("Could not estimate scale from camera height")
 
-    logger.info("Camera-height scale: %.4f m/unit (consistency=%.2f)",
-                best_scale, best_consistency)
+    logger.info(
+        "Camera-height scale: %.4f m/unit (score=%.2f, candidate=%s/%s)",
+        best_scale,
+        best_score,
+        best_metrics["axis"] if best_metrics else "n/a",
+        best_metrics["subset"] if best_metrics else "n/a",
+    )
+
+    notes = []
+    if best_metrics is not None:
+        notes.append(
+            "Camera-height cross-check candidate "
+            f"axis {best_metrics['axis']} ({best_metrics['subset']}) "
+            f"score={best_metrics['score']:.2f}"
+        )
 
     return CalibrationResult(
         scale_factor=best_scale,
-        confidence=best_consistency * 0.6,  # Cap at 60% since it's an assumption
+        confidence=max(0.0, min(best_score, 1.0)) * 0.6,  # cap because it remains an assumption
         num_cones_used=0,
         per_cone_scales=[best_scale],
         cone_3d_positions=[],
         selected_method="camera_height",
         camera_height_scale_factor=best_scale,
-        camera_height_confidence=best_consistency * 0.6,
+        camera_height_confidence=max(0.0, min(best_score, 1.0)) * 0.6,
+        notes=notes,
     )
 
 
@@ -319,7 +404,10 @@ def calibrate_scale(
     # Always try camera-height method as cross-check
     try:
         camera_result = calibrate_scale_from_camera_height(
-            images, points3d, config.assumed_camera_height_m, config.random_seed,
+            images,
+            points3d,
+            config,
+            projection_result.cone_3d_positions if projection_result else None,
         )
         logger.info("Camera-height scale: %.4f (confidence %.2f)",
                     camera_result.scale_factor, camera_result.confidence)
@@ -331,12 +419,27 @@ def calibrate_scale(
     # Camera-height is only a fallback assumption (1.6m handheld) and introduces
     # systematic bias when the actual camera height differs.
     if projection_result and camera_result:
+        projection_result.camera_height_scale_factor = camera_result.scale_factor
+        projection_result.camera_height_confidence = camera_result.confidence
+        projection_result.notes.extend(camera_result.notes)
+
+        if camera_result.confidence < config.min_camera_height_confidence_for_crosscheck:
+            projection_result.notes.append(
+                "Camera-height cross-check was ignored because the fitted ground plane was not stable enough."
+            )
+            logger.info(
+                "Using projection scale %.4f without camera-height cross-check "
+                "(camera-height confidence %.2f < %.2f)",
+                projection_result.scale_factor,
+                camera_result.confidence,
+                config.min_camera_height_confidence_for_crosscheck,
+            )
+            return projection_result
+
         ratio = max(
             projection_result.scale_factor / camera_result.scale_factor,
             camera_result.scale_factor / projection_result.scale_factor,
         )
-        projection_result.camera_height_scale_factor = camera_result.scale_factor
-        projection_result.camera_height_confidence = camera_result.confidence
         projection_result.scale_disagreement_ratio = ratio
         projection_result.notes.append(
             "Projection and camera-height scale checks disagree"
@@ -358,6 +461,10 @@ def calibrate_scale(
     if projection_result:
         return projection_result
     if camera_result:
+        if camera_result.confidence < config.min_camera_height_confidence_for_crosscheck:
+            camera_result.notes.append(
+                "Camera-height fallback is low-confidence. Capture visible cones or use a manual scale override when possible."
+            )
         camera_result.notes.append("Using camera-height fallback because projection calibration was unavailable")
         return camera_result
     raise ValueError("All calibration methods failed")
