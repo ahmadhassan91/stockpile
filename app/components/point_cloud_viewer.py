@@ -14,4 +14,4 @@ def render_point_cloud_viewer(
 ):
     """Render an interactive 3D point cloud viewer."""
     fig = build_3d_figure(pile_cloud, ground_cloud, cone_positions)
-    st.plotly_chart(fig, use_container_width=True)
+    st.plotly_chart(fig, width="stretch")

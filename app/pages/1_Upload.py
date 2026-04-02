@@ -1,5 +1,6 @@
 """Page 1: Video upload and configuration."""
 
+import shutil
 import tempfile
 from pathlib import Path
 
@@ -23,6 +24,35 @@ config = render_parameter_sidebar()
 st.session_state.pipeline_config = config
 
 PRESET_NAMES = list(DENSITY_PRESETS.keys())
+
+
+def _managed_upload_path(workspace: Path, filename: str) -> Path:
+    """Store uploaded videos inside the app workspace instead of /tmp."""
+    input_dir = workspace / "input"
+    input_dir.mkdir(parents=True, exist_ok=True)
+    return input_dir / f"uploaded{Path(filename).suffix.lower()}"
+
+
+def _remove_managed_upload(path_str: str | None, workspace: Path) -> None:
+    """Delete uploads created in the workspace or temp dir."""
+    if not path_str:
+        return
+
+    path = Path(path_str)
+    try:
+        resolved = path.resolve()
+    except OSError:
+        return
+
+    workspace_root = workspace.resolve()
+    temp_root = Path(tempfile.gettempdir()).resolve()
+    if not path.is_file():
+        return
+    if resolved.is_relative_to(workspace_root) or resolved.is_relative_to(temp_root):
+        try:
+            path.unlink()
+        except OSError:
+            pass
 
 
 # ── Material Confirmation Dialog ───────────────────────────────────────────────
@@ -80,7 +110,7 @@ def material_confirmation_dialog(current_material: str):
         if st.button(
             f"✅ Confirm — {chosen_material}",
             type="primary",
-            use_container_width=True,
+            width="stretch",
             key="dialog_confirm_btn",
         ):
             # Save the dialog selection back to session state
@@ -100,7 +130,7 @@ def material_confirmation_dialog(current_material: str):
             st.rerun()
 
     with col_cancel:
-        if st.button("✖ Cancel", use_container_width=True, key="dialog_cancel_btn"):
+        if st.button("✖ Cancel", width="stretch", key="dialog_cancel_btn"):
             st.session_state["dialog_dismissed"] = True
             st.rerun()
 
@@ -113,27 +143,32 @@ uploaded = st.file_uploader(
 
 if uploaded is not None:
     # Reset confirmation each time a new file is dropped
-    is_new_file = st.session_state.get("last_uploaded_name") != uploaded.name
+    upload_signature = (uploaded.name, uploaded.size)
+    is_new_file = st.session_state.get("last_uploaded_signature") != upload_signature
     if is_new_file:
+        _remove_managed_upload(st.session_state.get("video_path"), config.workspace)
+        shutil.rmtree(config.workspace / "input", ignore_errors=True)
         st.session_state["material_confirmed"] = False
         st.session_state["dialog_dismissed"] = False
-        st.session_state["last_uploaded_name"] = uploaded.name
+        st.session_state["last_uploaded_signature"] = upload_signature
         st.session_state["_upload_processed"] = False
         st.session_state["video_path"] = None
+        st.session_state["_video_info"] = None
+        st.session_state["_first_frame"] = None
+        st.session_state["_cone_detections"] = []
 
     # ── Write + process only once per uploaded file ────────────────────────
     if not st.session_state.get("_upload_processed"):
-        suffix = Path(uploaded.name).suffix
-        tmp = tempfile.NamedTemporaryFile(delete=False, suffix=suffix)
+        video_path = _managed_upload_path(config.workspace, uploaded.name)
         with st.status("Processing uploaded video...", expanded=True) as status:
             st.write("Saving video to disk...")
-            tmp.write(uploaded.read())
-            tmp.flush()
-            st.session_state.video_path = tmp.name
+            with video_path.open("wb") as destination:
+                destination.write(uploaded.getbuffer())
+            st.session_state.video_path = str(video_path)
 
             st.write("Reading video metadata...")
             try:
-                info = get_video_info(tmp.name)
+                info = get_video_info(video_path)
                 st.session_state["_video_info"] = info
             except Exception as e:
                 st.error(f"Could not read video info: {e}")
@@ -141,7 +176,7 @@ if uploaded is not None:
             st.write("Extracting first frame...")
             frame = None
             try:
-                frame = get_first_frame(tmp.name)
+                frame = get_first_frame(video_path)
                 st.session_state["_first_frame"] = frame
             except Exception as e:
                 st.error(f"Could not read first frame: {e}")
@@ -186,7 +221,7 @@ if uploaded is not None:
                 f"density: **{confirmed_density/1000:.2f} MT/m³** ({confirmed_density:.0f} kg/m³)"
             )
         with col_change:
-            if st.button("✏️ Change", use_container_width=True, key="reopen_dialog_btn"):
+            if st.button("✏️ Change", width="stretch", key="reopen_dialog_btn"):
                 st.session_state["material_confirmed"] = False
                 st.rerun()
 

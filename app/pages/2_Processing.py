@@ -58,7 +58,7 @@ if st.session_state.get("video_path") is None:
     st.warning("No video uploaded. Go to the Upload page first.")
     st.stop()
 
-config = st.session_state.get("pipeline_config", PipelineConfig())
+config = st.session_state.get("pipeline_config") or PipelineConfig()
 
 # Apply manual scale override from sidebar
 manual_scale = st.session_state.get("manual_scale_override")
@@ -74,7 +74,7 @@ with st.expander("Current Settings"):
 
 # Run button
 if not st.session_state.get("pipeline_running", False):
-    if st.button("Start Processing", type="primary", use_container_width=True):
+    if st.button("Start Processing", type="primary", width="stretch"):
         st.session_state.pipeline_running = True
         st.session_state.pipeline_result = None
 
@@ -199,4 +199,3 @@ if result and not st.session_state.get("pipeline_running"):
                 "Volume is in arbitrary COLMAP units and is not usable. "
                 "Check that red traffic cones are clearly visible in the video, or use manual scale override."
             )
-

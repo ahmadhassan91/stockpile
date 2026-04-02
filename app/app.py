@@ -2,24 +2,29 @@
 
 import logging
 import os
+from logging.handlers import RotatingFileHandler
 
 import streamlit as st
 
 # ── Logging setup ──────────────────────────────────────────────────────────────
 LOG_FILE = "/tmp/stockpile_app.log"
+LOG_LEVEL = os.getenv("STOCKPILE_LOG_LEVEL", "INFO").upper()
 
 def _setup_logging():
     root = logging.getLogger()
     if any(isinstance(h, logging.FileHandler) and getattr(h, 'baseFilename', '') == LOG_FILE
            for h in root.handlers):
         return  # already set up
+    level = getattr(logging, LOG_LEVEL, logging.INFO)
     fmt = logging.Formatter("%(asctime)s [%(levelname)s] %(name)s: %(message)s",
                             datefmt="%H:%M:%S")
-    fh = logging.FileHandler(LOG_FILE)
+    fh = RotatingFileHandler(LOG_FILE, maxBytes=1_000_000, backupCount=3)
     fh.setFormatter(fmt)
-    fh.setLevel(logging.DEBUG)
-    root.setLevel(logging.DEBUG)
+    fh.setLevel(level)
+    root.setLevel(level)
     root.addHandler(fh)
+    logging.getLogger("watchdog").setLevel(logging.WARNING)
+    logging.getLogger("watchdog.observers.inotify_buffer").setLevel(logging.WARNING)
 
 _setup_logging()
 

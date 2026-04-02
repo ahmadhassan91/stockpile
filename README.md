@@ -42,6 +42,10 @@ streamlit run app/app.py
 
 Open http://localhost:8501 in your browser.
 
+The committed `.streamlit/config.toml` keeps host deployments bound to
+`127.0.0.1` with XSRF protection enabled. The Docker entrypoint overrides the
+address to `0.0.0.0` so containerized deployments still work as expected.
+
 ## Usage
 
 1. **Upload** — Upload a walkaround video (MP4/AVI/MOV) of the stockpile with red traffic cones placed around it. Set cone height and material type in the sidebar.

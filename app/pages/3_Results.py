@@ -176,7 +176,7 @@ if result.pile_cloud and len(result.pile_cloud.points) > 0:
         result.ground_cloud,
         result.cone_3d_positions if result.cone_3d_positions else None,
     )
-    st.plotly_chart(fig, use_container_width=True)
+    st.plotly_chart(fig, width="stretch")
 else:
     st.warning("No pile points to display.")
 

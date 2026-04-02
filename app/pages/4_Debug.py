@@ -37,7 +37,7 @@ def render_log_viewer(lines: int = 100, key_prefix: str = "debug"):
     st.code(log_text, language=None)
 
 from stockpile.colmap_runner import get_reconstruction_stats
-from stockpile.cone_detection import ConeDetection, detect_cones, draw_cone_overlays
+from stockpile.cone_detection import detect_cones, draw_cone_overlays
 from stockpile.config import PipelineConfig
 
 import sys
@@ -49,7 +49,7 @@ init_session_state()
 st.header("4. Debug & Inspection")
 
 result = st.session_state.get("pipeline_result")
-config = st.session_state.get("pipeline_config", PipelineConfig())
+config = st.session_state.get("pipeline_config") or PipelineConfig()
 
 # Section 1: Frame Gallery with Cone Overlays
 st.subheader("Cone Detection Gallery")

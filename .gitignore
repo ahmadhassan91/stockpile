@@ -10,6 +10,7 @@ build/
 *.jpeg
 *.png
 !tests/fixtures/*
-.streamlit/
+.streamlit/*
+!.streamlit/config.toml
 .venv/
 .venv/
