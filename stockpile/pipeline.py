@@ -44,6 +44,7 @@ class PipelineResult:
     stage: str = ""
     quality_blockers: list[str] = field(default_factory=list)
     quality_warnings: list[str] = field(default_factory=list)
+    review_grade: bool = False
     publishable: bool = True
     error: str | None = None
 
@@ -85,6 +86,7 @@ class Pipeline:
         pile_height_p99 = float(np.percentile(pile_pts[:, 2], 99)) if pile_count >= 100 else pile_height
         peak_relief_m = max(0.0, pile_height - pile_height_p99)
         peak_relief_ratio = (pile_height / pile_height_p99) if pile_height_p99 > 1e-6 else None
+        vol = result.volume
 
         if pile_count < gates.min_pile_points_block:
             self._add_blocker(
@@ -131,10 +133,29 @@ class Pipeline:
                 )
 
             if cal.num_cones_used < gates.min_unique_cones_block:
-                self._add_blocker(
-                    result,
-                    f"Only {cal.num_cones_used} unique cone reference(s) were recovered; more physical references are needed.",
+                single_cone_review_eligible = (
+                    cal.num_cones_used == 1
+                    and cal.confidence >= gates.single_cone_review_min_confidence
+                    and pile_count >= gates.single_cone_review_min_pile_points
+                    and vol is not None
+                    and vol.grid_occupancy_pct >= gates.single_cone_review_min_grid_occupancy_pct
+                    and (
+                        cal.scale_disagreement_ratio is None
+                        or cal.scale_disagreement_ratio <= gates.single_cone_review_max_scale_disagreement
+                    )
                 )
+                if single_cone_review_eligible:
+                    result.review_grade = True
+                    self._add_warning(
+                        result,
+                        "Only 1 unique cone reference was recovered. The reconstructed pile looks consistent enough "
+                        "for review-grade use, but the scale should still be cross-checked before client reporting.",
+                    )
+                else:
+                    self._add_blocker(
+                        result,
+                        f"Only {cal.num_cones_used} unique cone reference(s) were recovered; more physical references are needed.",
+                    )
             elif cal.num_cones_used < gates.min_unique_cones_warn:
                 self._add_warning(
                     result,
@@ -163,8 +184,7 @@ class Pipeline:
                 "Manual scale override was used. Confirm the reference distance before reporting the result.",
             )
 
-        if result.volume:
-            vol = result.volume
+        if vol:
             if vol.grid_occupancy_pct < gates.min_grid_occupancy_block_pct:
                 self._add_blocker(
                     result,
@@ -190,6 +210,9 @@ class Pipeline:
 
             if vol.recommended_note:
                 self._add_warning(result, vol.recommended_note)
+
+        if result.quality_blockers:
+            result.review_grade = False
 
         result.publishable = not result.quality_blockers
 
@@ -358,7 +381,13 @@ class Pipeline:
             result.weight_kg = vol.recommended_m3 * self.config.material_density
             self._assess_measurement_quality(result)
 
-            if result.publishable:
+            if result.publishable and result.review_grade:
+                self._report(
+                    "volume_computation",
+                    1.0,
+                    f"Review-grade volume: {vol.recommended_m3:.2f} m³, Weight: {result.weight_kg:.0f} kg",
+                )
+            elif result.publishable:
                 self._report("volume_computation", 1.0,
                              f"Volume: {vol.recommended_m3:.2f} m³, Weight: {result.weight_kg:.0f} kg")
             else:

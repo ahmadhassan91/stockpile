@@ -172,6 +172,7 @@ else:
 st.subheader("Measurement Reliability")
 if result:
     st.write(f"**Publishable**: {'Yes' if result.publishable else 'No'}")
+    st.write(f"**Review grade**: {'Yes' if getattr(result, 'review_grade', False) else 'No'}")
     if result.volume:
         st.write(f"**Grid occupancy**: {result.volume.grid_occupancy_pct:.2f}%")
         if result.volume.grid_to_hull_ratio is not None:

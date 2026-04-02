@@ -28,6 +28,11 @@ if not result.publishable:
         "🚫 **Review only — this run failed one or more reliability checks.** "
         "Do not use the reported tonnage for client-facing reporting until the blockers below are addressed."
     )
+elif getattr(result, "review_grade", False):
+    st.warning(
+        "🟡 **Review-grade result — the reconstructed pile looks usable, but scale confidence is limited by a single recovered cone.** "
+        "Use this for internal review or side-by-side comparison, and cross-check before client-facing reporting."
+    )
 elif result.quality_warnings:
     st.warning(
         "⚠️ **This run completed with reliability warnings.** "
@@ -74,7 +79,18 @@ if result.calibration:
     col3.metric("Cones Detected", str(cal.num_cones_used))
     col4.metric("Scale Source", result.scale_source.replace("_", " ").title())
 
-    if conf_pct < 70:
+    if cal.num_cones_used == 1:
+        if getattr(result, "review_grade", False):
+            st.warning(
+                f"🟡 **Projection consistency is {conf_pct:.0f}%,** but only one unique cone was recovered. "
+                "Treat this as review-grade scale and cross-check it before client-facing reporting."
+            )
+        else:
+            st.warning(
+                f"🟡 **Projection consistency is {conf_pct:.0f}%,** but only one unique cone was recovered. "
+                "That leaves the run blocked pending stronger physical references."
+            )
+    elif conf_pct < 70:
         st.warning(
             f"{conf_color} **Calibration confidence is {conf_label}.** "
             "This may cause the volume to be significantly over- or under-estimated. "
@@ -183,7 +199,8 @@ st.subheader("📦 Volume & Weight")
 
 col1, col2, col3 = st.columns(3)
 col1.metric(
-    "Volume (recommended)" if result.publishable else "Volume (review only)",
+    "Volume (review-grade)" if getattr(result, "review_grade", False)
+    else ("Volume (recommended)" if result.publishable else "Volume (review only)"),
     f"{vol.recommended_m3:.2f} m³",
     help="The selected output after applying volume sanity checks",
 )

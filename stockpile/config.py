@@ -99,6 +99,10 @@ class QualityGateConfig:
     peak_relief_block_m: float = 2.0
     peak_relief_warn_ratio: float = 1.08
     peak_relief_block_ratio: float = 1.15
+    single_cone_review_min_confidence: float = 0.65
+    single_cone_review_min_pile_points: int = 10000
+    single_cone_review_min_grid_occupancy_pct: float = 10.0
+    single_cone_review_max_scale_disagreement: float = 2.0
 
 
 # Material presets — names and max bulk densities from the site density table.

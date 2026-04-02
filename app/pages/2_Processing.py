@@ -173,7 +173,12 @@ if result and not st.session_state.get("pipeline_running"):
     if result.error:
         st.error(f"Last run failed at stage '{result.stage}': {result.error}")
     else:
-        if result.publishable:
+        if result.publishable and getattr(result, "review_grade", False):
+            st.warning(
+                "🟡 Processing complete. This run is suitable for review-grade use, "
+                "but the scale should still be cross-checked before client reporting."
+            )
+        elif result.publishable:
             st.success("✅ Processing complete! Navigate to the **Results** page to review the output.")
         else:
             st.error("🚫 Processing completed, but the measurement was flagged for review before reporting.")
@@ -198,7 +203,18 @@ if result and not st.session_state.get("pipeline_running"):
             if result.volume:
                 col4.metric("Volume (Grid)", f"{result.volume.recommended_m3:.1f} m³")
 
-            if conf_pct < 40:
+            if cal.num_cones_used == 1:
+                if getattr(result, "review_grade", False):
+                    st.warning(
+                        f"{conf_icon} **Projection consistency is {conf_pct:.0f}%,** but only one unique cone was recovered. "
+                        "Treat this as a review-grade scale and cross-check it before client reporting."
+                    )
+                else:
+                    st.warning(
+                        f"{conf_icon} **Projection consistency is {conf_pct:.0f}%,** but only one unique cone was recovered. "
+                        "The run remains blocked until more physical references are visible."
+                    )
+            elif conf_pct < 40:
                 st.error(
                     f"{conf_icon} **Low calibration confidence ({conf_pct:.0f}%).** "
                     "Volume results may be inaccurate. Consider enabling the manual scale override "
