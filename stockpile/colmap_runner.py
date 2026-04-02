@@ -13,6 +13,11 @@ from .config import ColmapConfig
 
 logger = logging.getLogger(__name__)
 
+_COLMAP_MODEL_FILESETS = (
+    ("cameras.bin", "images.bin", "points3D.bin"),
+    ("cameras.txt", "images.txt", "points3D.txt"),
+)
+
 # COLMAP binary format structures
 CameraModel = namedtuple("CameraModel", ["model_id", "model_name", "num_params"])
 
@@ -95,6 +100,45 @@ def _subsample_images_dir(images_dir: Path, max_frames: int) -> Path:
     return subset_dir
 
 
+def _is_colmap_model_dir(path: Path) -> bool:
+    """Return True when the path contains a valid COLMAP sparse model."""
+    if not path.exists() or not path.is_dir():
+        return False
+    return any(all((path / name).exists() for name in fileset) for fileset in _COLMAP_MODEL_FILESETS)
+
+
+def _find_sparse_model_dir(sparse_dir: Path) -> Path:
+    """Locate a COLMAP sparse model directory under sparse_dir."""
+    sparse_dir = Path(sparse_dir)
+
+    if _is_colmap_model_dir(sparse_dir):
+        return sparse_dir
+
+    if not sparse_dir.exists():
+        raise RuntimeError(f"COLMAP sparse directory was not created: {sparse_dir}")
+
+    direct_subdirs = sorted(path for path in sparse_dir.iterdir() if path.is_dir())
+    for candidate in direct_subdirs:
+        if _is_colmap_model_dir(candidate):
+            return candidate
+
+    recursive_candidates = sorted(
+        {
+            parent
+            for marker in ("cameras.bin", "cameras.txt")
+            for parent in (path.parent for path in sparse_dir.rglob(marker))
+        }
+    )
+    for candidate in recursive_candidates:
+        if _is_colmap_model_dir(candidate):
+            return candidate
+
+    raise RuntimeError(
+        "COLMAP completed but produced no sparse model files "
+        f"under {sparse_dir}. Expected cameras/images/points3D outputs."
+    )
+
+
 def run_colmap_reconstruction(
     images_dir: Path,
     workspace_dir: Path,
@@ -142,6 +186,11 @@ def run_colmap_reconstruction(
             logger.error("COLMAP stderr: %s", result.stderr[-2000:] if result.stderr else "")
             raise RuntimeError(f"COLMAP failed with return code {result.returncode}")
 
+        if result.stdout:
+            (workspace_dir / "automatic_reconstructor.stdout.log").write_text(result.stdout)
+        if result.stderr:
+            (workspace_dir / "automatic_reconstructor.stderr.log").write_text(result.stderr)
+
         logger.info("COLMAP reconstruction complete")
 
     except subprocess.TimeoutExpired:
@@ -150,15 +199,7 @@ def run_colmap_reconstruction(
     if progress_callback:
         progress_callback(0.8)
 
-    # Find the sparse model (usually in sparse/0/)
-    model_dir = sparse_dir / "0"
-    if not model_dir.exists():
-        # Check for any sub-directory
-        subdirs = sorted(sparse_dir.iterdir()) if sparse_dir.exists() else []
-        if subdirs:
-            model_dir = subdirs[0]
-        else:
-            raise RuntimeError("COLMAP produced no sparse model")
+    model_dir = _find_sparse_model_dir(sparse_dir)
 
     if progress_callback:
         progress_callback(1.0)
@@ -172,6 +213,9 @@ def export_to_ply(
     colmap_binary: str = "colmap",
 ) -> Path:
     """Export COLMAP sparse model to PLY file."""
+    if not _is_colmap_model_dir(Path(model_dir)):
+        raise RuntimeError(f"Cannot export PLY because no valid COLMAP model was found at {model_dir}")
+
     output_path = Path(output_path)
     output_path.parent.mkdir(parents=True, exist_ok=True)
 
@@ -183,8 +227,19 @@ def export_to_ply(
         "--output_type", "PLY",
     ]
 
-    result = subprocess.run(cmd, capture_output=True, text=True, timeout=120,
-                            env={**os.environ, "QT_QPA_PLATFORM": "offscreen"})
+    try:
+        result = subprocess.run(
+            cmd,
+            capture_output=True,
+            text=True,
+            timeout=600,
+            env={**os.environ, "QT_QPA_PLATFORM": "offscreen"},
+        )
+    except subprocess.TimeoutExpired as exc:
+        raise RuntimeError(
+            f"PLY export timed out after 10 minutes for sparse model at {model_dir}"
+        ) from exc
+
     if result.returncode != 0:
         raise RuntimeError(f"PLY export failed: {result.stderr}")
 
