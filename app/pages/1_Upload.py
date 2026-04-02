@@ -20,6 +20,7 @@ from components.parameter_sidebar import (
     render_parameter_sidebar,
     SIDEBAR_SETTING_KEYS,
 )
+from components.pipeline_presets import build_recommended_sidebar_overrides
 from components.session_init import init_session_state
 
 init_session_state()
@@ -39,6 +40,14 @@ SETTING_KEY_MAP = {
     "dialog_above_ground": "sidebar_above_ground",
     "dialog_grid_resolution": "sidebar_grid_resolution",
 }
+
+AUTO_MANAGED_DIALOG_KEYS = (
+    "dialog_frame_interval",
+    "dialog_max_frames",
+    "dialog_colmap_quality",
+    "dialog_above_ground",
+    "dialog_grid_resolution",
+)
 
 
 def seed_settings_dialog_from_sidebar(force: bool = False):
@@ -77,6 +86,7 @@ def apply_dialog_settings():
     st.session_state.confirmed_settings_signature = tuple(
         (key, sidebar_overrides.get(key))
         for key in SIDEBAR_SETTING_KEYS
+        if key != "sidebar_admin_mode"
     )
 
 
@@ -117,12 +127,19 @@ def build_upload_setting_notes(video_info: dict | None, detections: list | None)
     quality = st.session_state.get("dialog_colmap_quality", "medium")
     manual_scale_enabled = bool(st.session_state.get("dialog_manual_scale_enabled", False))
     inferred_material = st.session_state.get("upload_inferred_material")
+    profile_label = st.session_state.get("recommended_processing_profile")
+    profile_notes = st.session_state.get("recommended_processing_notes", [])
 
     if inferred_material:
         notes.append(
             f"Material was auto-suggested from the filename as **{inferred_material}**. "
             "Please confirm it matches the actual stockpile before continuing."
         )
+    if profile_label:
+        notes.append(
+            f"Processing profile **{profile_label}** was auto-selected from the upload quality signals."
+        )
+        notes.extend(profile_notes[:2])
 
     if video_info:
         estimated_frames = max(1, int(video_info["duration"] / max(interval, 0.01)))
@@ -165,6 +182,23 @@ def build_upload_setting_notes(video_info: dict | None, detections: list | None)
     return notes, warnings
 
 
+def apply_recommended_dialog_preset(material: str, video_info: dict | None, detections: list | None):
+    """Apply smart preset overrides into the dialog state before widgets render."""
+    overrides, profile_label, reasons = build_recommended_sidebar_overrides(material, video_info, detections)
+    for sidebar_key, value in overrides.items():
+        dialog_key = next(
+            (candidate for candidate, mapped_key in SETTING_KEY_MAP.items() if mapped_key == sidebar_key),
+            None,
+        )
+        if dialog_key and dialog_key in AUTO_MANAGED_DIALOG_KEYS:
+            st.session_state[dialog_key] = value
+
+    st.session_state["recommended_processing_profile"] = profile_label
+    st.session_state["recommended_processing_notes"] = reasons
+    st.session_state["dialog_recommended_material"] = material
+    st.session_state["dialog_recommended_signature"] = (material, profile_label)
+
+
 @st.dialog("Review Current Settings", width="large")
 def settings_review_dialog(video_info: dict | None, detections: list | None):
     """Ask the user to confirm or adjust the current pipeline settings."""
@@ -180,6 +214,15 @@ def settings_review_dialog(video_info: dict | None, detections: list | None):
         options=material_options,
         key="dialog_material_select",
     )
+
+    _, profile_label, profile_notes = build_recommended_sidebar_overrides(
+        chosen_material,
+        video_info,
+        detections,
+    )
+    profile_signature = (chosen_material, profile_label)
+    if st.session_state.get("dialog_recommended_signature") != profile_signature:
+        apply_recommended_dialog_preset(chosen_material, video_info, detections)
 
     if chosen_material == "Custom":
         st.number_input(
@@ -216,52 +259,63 @@ def settings_review_dialog(video_info: dict | None, detections: list | None):
             key="dialog_camera_height",
         )
 
-    with st.expander("Advanced processing settings", expanded=False):
-        st.checkbox(
-            "Override auto-detected scale",
-            key="dialog_manual_scale_enabled",
-        )
-        if st.session_state.get("dialog_manual_scale_enabled"):
-            st.number_input(
-                "Manual scale factor (m / COLMAP unit)",
-                min_value=0.001,
-                max_value=200.0,
-                step=0.1,
-                key="dialog_manual_scale_value",
-            )
+    st.markdown("**Auto-selected processing profile**")
+    st.info(f"**{profile_label}**")
+    if profile_notes:
+        st.caption("  \n".join(f"- {note}" for note in profile_notes))
 
-        st.slider(
-            "Frame interval (sec)",
-            min_value=0.1,
-            max_value=2.0,
-            step=0.05,
-            key="dialog_frame_interval",
-        )
-        st.number_input(
-            "Max frames",
-            min_value=100,
-            max_value=2000,
-            step=100,
-            key="dialog_max_frames",
-        )
-        st.select_slider(
-            "COLMAP quality",
-            options=["low", "medium", "high"],
-            key="dialog_colmap_quality",
-        )
-        st.slider(
-            "Min pile height above ground (m)",
-            min_value=0.01,
-            max_value=0.5,
-            step=0.01,
-            key="dialog_above_ground",
-        )
-        st.slider(
-            "Grid resolution (m)",
-            min_value=0.01,
-            max_value=0.5,
-            step=0.01,
-            key="dialog_grid_resolution",
+    if st.session_state.get("sidebar_admin_mode"):
+        with st.expander("Advanced processing settings", expanded=False):
+            st.checkbox(
+                "Override auto-detected scale",
+                key="dialog_manual_scale_enabled",
+            )
+            if st.session_state.get("dialog_manual_scale_enabled"):
+                st.number_input(
+                    "Manual scale factor (m / COLMAP unit)",
+                    min_value=0.001,
+                    max_value=200.0,
+                    step=0.1,
+                    key="dialog_manual_scale_value",
+                )
+
+            st.slider(
+                "Frame interval (sec)",
+                min_value=0.1,
+                max_value=2.0,
+                step=0.05,
+                key="dialog_frame_interval",
+            )
+            st.number_input(
+                "Max frames",
+                min_value=100,
+                max_value=2000,
+                step=100,
+                key="dialog_max_frames",
+            )
+            st.select_slider(
+                "COLMAP quality",
+                options=["low", "medium", "high"],
+                key="dialog_colmap_quality",
+            )
+            st.slider(
+                "Min pile height above ground (m)",
+                min_value=0.01,
+                max_value=0.5,
+                step=0.01,
+                key="dialog_above_ground",
+            )
+            st.slider(
+                "Grid resolution (m)",
+                min_value=0.01,
+                max_value=0.5,
+                step=0.01,
+                key="dialog_grid_resolution",
+            )
+    else:
+        st.caption(
+            "Advanced reconstruction settings are being managed automatically for this run. "
+            "We only expose them when admin mode is enabled."
         )
 
     notes, warnings = build_upload_setting_notes(video_info, detections)
@@ -302,6 +356,7 @@ def render_settings_summary():
     summary_lines = [
         f"**Material:** {st.session_state.get('selected_material', config.material_name)}",
         f"**Density:** {density_mt:.2f} MT/m³ ({config.material_density:.0f} kg/m³)",
+        f"**Processing profile:** {st.session_state.get('recommended_processing_profile', 'Standard')}",
         f"**Cone height:** {config.scale_calibration.known_cone_height_m:.2f} m",
         f"**Camera height:** {config.scale_calibration.assumed_camera_height_m:.2f} m",
         f"**Frame interval:** {config.frame_extraction.interval_sec:.2f} s",
@@ -388,6 +443,17 @@ if uploaded is not None:
     info = st.session_state.get("_video_info")
     frame = st.session_state.get("_first_frame")
     detections = st.session_state.get("_cone_detections", [])
+    material_for_recommendation = st.session_state.get("dialog_material_select") or st.session_state.get(
+        "sidebar_material_select"
+    )
+    if material_for_recommendation:
+        _, profile_label, profile_notes = build_recommended_sidebar_overrides(
+            material_for_recommendation,
+            info,
+            detections,
+        )
+        st.session_state["recommended_processing_profile"] = profile_label
+        st.session_state["recommended_processing_notes"] = profile_notes
 
     # Show the dialog if settings haven't been confirmed or dismissed yet
     if not st.session_state.get("settings_confirmed") and not st.session_state.get("settings_dialog_dismissed"):

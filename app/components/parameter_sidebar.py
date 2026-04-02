@@ -19,9 +19,13 @@ DEFAULT_SETTING_STATE = {
     "sidebar_colmap_quality": "medium",
     "sidebar_above_ground": 0.10,
     "sidebar_grid_resolution": 0.05,
+    "sidebar_admin_mode": False,
 }
 
 SIDEBAR_SETTING_KEYS = tuple(DEFAULT_SETTING_STATE.keys())
+PIPELINE_SIGNATURE_KEYS = tuple(
+    key for key in SIDEBAR_SETTING_KEYS if key != "sidebar_admin_mode"
+)
 PENDING_SIDEBAR_OVERRIDES_KEY = "pending_sidebar_setting_overrides"
 
 
@@ -99,7 +103,7 @@ def persist_pipeline_selection_metadata():
 def get_pipeline_setting_signature() -> tuple:
     """Return a stable signature for the current sidebar settings."""
     ensure_pipeline_setting_state()
-    return tuple((key, st.session_state.get(key)) for key in SIDEBAR_SETTING_KEYS)
+    return tuple((key, st.session_state.get(key)) for key in PIPELINE_SIGNATURE_KEYS)
 
 
 def render_parameter_sidebar() -> PipelineConfig:
@@ -108,6 +112,16 @@ def render_parameter_sidebar() -> PipelineConfig:
     apply_pending_sidebar_setting_overrides()
 
     st.sidebar.header("⚙️ Pipeline Settings")
+    st.sidebar.caption(
+        "Client mode keeps the measurement knobs on safe auto-pilot. "
+        "Switch on admin mode only when we need to override the defaults."
+    )
+    st.sidebar.toggle(
+        "Admin mode",
+        key="sidebar_admin_mode",
+        help="Show the full pipeline controls for internal testing and calibration work.",
+    )
+    admin_mode = bool(st.session_state.get("sidebar_admin_mode"))
 
     # ── Material ──────────────────────────────────────────────────────────
     st.sidebar.subheader("🪨 Material")
@@ -138,102 +152,120 @@ def render_parameter_sidebar() -> PipelineConfig:
         )
         density_display = f"{density/1000:.2f} MT/m³ (max)"
 
-    # ── Scale Calibration ─────────────────────────────────────────────────
-    st.sidebar.subheader("📏 Scale Calibration")
+    recommended_profile = st.session_state.get("recommended_processing_profile")
+    recommended_notes = st.session_state.get("recommended_processing_notes", [])
+    if recommended_profile:
+        st.sidebar.success(f"Auto processing profile: {recommended_profile}")
+        if recommended_notes:
+            st.sidebar.caption(recommended_notes[0])
 
-    st.sidebar.number_input(
-        "Cone height (m)",
-        min_value=0.1,
-        max_value=2.0,
-        step=0.05,
-        key="sidebar_cone_height",
-        help="Height of the traffic cones placed around the stockpile. "
-        "Standard cone = 0.75 m. Mini cone = 0.50 m. Measure yours if unsure.",
-    )
-    st.sidebar.number_input(
-        "Camera height above ground (m)",
-        min_value=0.5,
-        max_value=3.0,
-        step=0.1,
-        key="sidebar_camera_height",
-        help="Height of the phone/camera during filming. "
-        "Used as fallback when cone detection fails.",
-    )
-
-    st.sidebar.markdown("**Manual scale override**")
-    st.sidebar.checkbox(
-        "Override auto-detected scale",
-        key="sidebar_manual_scale_enabled",
-        help="If the auto-calibration is wrong, enter the scale factor here. "
-        "Increase the value to make the volume larger.",
-    )
-    if st.session_state.get("sidebar_manual_scale_enabled"):
-        st.sidebar.number_input(
-            "Scale factor (m / COLMAP unit)",
-            min_value=0.001,
-            max_value=200.0,
-            step=0.1,
-            key="sidebar_manual_scale_value",
-            help="Metres per COLMAP unit. "
-            "Tip: if reported volume is 4× too small, multiply current factor by 4.",
-        )
+    if not admin_mode:
         st.sidebar.info(
-            "💡 **How to estimate:** measure the real-world distance between two "
-            "visible points, divide by their 3D COLMAP distance, and enter the result."
+            "Advanced capture and reconstruction settings are managed automatically "
+            "for client-facing runs. Turn on admin mode if we need to tune them."
         )
+
+    # ── Scale Calibration ─────────────────────────────────────────────────
+    if admin_mode:
+        st.sidebar.subheader("📏 Scale Calibration")
+
+        st.sidebar.number_input(
+            "Cone height (m)",
+            min_value=0.1,
+            max_value=2.0,
+            step=0.05,
+            key="sidebar_cone_height",
+            help="Height of the traffic cones placed around the stockpile. "
+            "Standard cone = 0.75 m. Mini cone = 0.50 m. Measure yours if unsure.",
+        )
+        st.sidebar.number_input(
+            "Camera height above ground (m)",
+            min_value=0.5,
+            max_value=3.0,
+            step=0.1,
+            key="sidebar_camera_height",
+            help="Height of the phone/camera during filming. "
+            "Used as fallback when cone detection fails.",
+        )
+
+        st.sidebar.markdown("**Manual scale override**")
+        st.sidebar.checkbox(
+            "Override auto-detected scale",
+            key="sidebar_manual_scale_enabled",
+            help="If the auto-calibration is wrong, enter the scale factor here. "
+            "Increase the value to make the volume larger.",
+        )
+        if st.session_state.get("sidebar_manual_scale_enabled"):
+            st.sidebar.number_input(
+                "Scale factor (m / COLMAP unit)",
+                min_value=0.001,
+                max_value=200.0,
+                step=0.1,
+                key="sidebar_manual_scale_value",
+                help="Metres per COLMAP unit. "
+                "Tip: if reported volume is 4× too small, multiply current factor by 4.",
+            )
+            st.sidebar.info(
+                "💡 **How to estimate:** measure the real-world distance between two "
+                "visible points, divide by their 3D COLMAP distance, and enter the result."
+            )
 
     # ── Frame Extraction ──────────────────────────────────────────────────
-    st.sidebar.subheader("🎞️ Frame Extraction")
-    st.sidebar.slider(
-        "Frame interval (sec)",
-        min_value=0.1,
-        max_value=2.0,
-        step=0.05,
-        key="sidebar_frame_interval",
-        help="Sample one frame every N seconds. Lower = more frames = better 3D model, "
-        "but longer processing time.",
-    )
-    st.sidebar.number_input(
-        "Max frames",
-        min_value=100,
-        max_value=2000,
-        step=100,
-        key="sidebar_max_frames",
-        help="Cap on number of frames sent to COLMAP. Larger piles need more frames.",
-    )
+    if admin_mode:
+        st.sidebar.subheader("🎞️ Frame Extraction")
+        st.sidebar.slider(
+            "Frame interval (sec)",
+            min_value=0.1,
+            max_value=2.0,
+            step=0.05,
+            key="sidebar_frame_interval",
+            help="Sample one frame every N seconds. Lower = more frames = better 3D model, "
+            "but longer processing time.",
+        )
+        st.sidebar.number_input(
+            "Max frames",
+            min_value=100,
+            max_value=2000,
+            step=100,
+            key="sidebar_max_frames",
+            help="Cap on number of frames sent to COLMAP. Larger piles need more frames.",
+        )
 
     # ── COLMAP Reconstruction ─────────────────────────────────────────────
-    st.sidebar.subheader("🏗️ 3D Reconstruction")
-    st.sidebar.select_slider(
-        "COLMAP quality",
-        options=["low", "medium", "high"],
-        key="sidebar_colmap_quality",
-        help="Higher quality = better 3D model but longer processing time.",
-    )
+    if admin_mode:
+        st.sidebar.subheader("🏗️ 3D Reconstruction")
+        st.sidebar.select_slider(
+            "COLMAP quality",
+            options=["low", "medium", "high"],
+            key="sidebar_colmap_quality",
+            help="Higher quality = better 3D model but longer processing time.",
+        )
 
     # ── Ground Plane ──────────────────────────────────────────────────────
-    st.sidebar.subheader("🌍 Ground Plane")
-    st.sidebar.slider(
-        "Min pile height above ground (m)",
-        min_value=0.01,
-        max_value=0.5,
-        step=0.01,
-        key="sidebar_above_ground",
-        help="Points below this height are classified as ground, not pile. "
-        "Increase if ground noise is being counted as pile material.",
-    )
+    if admin_mode:
+        st.sidebar.subheader("🌍 Ground Plane")
+        st.sidebar.slider(
+            "Min pile height above ground (m)",
+            min_value=0.01,
+            max_value=0.5,
+            step=0.01,
+            key="sidebar_above_ground",
+            help="Points below this height are classified as ground, not pile. "
+            "Increase if ground noise is being counted as pile material.",
+        )
 
     # ── Volume ────────────────────────────────────────────────────────────
-    st.sidebar.subheader("📐 Volume Computation")
-    st.sidebar.slider(
-        "Grid resolution (m)",
-        min_value=0.01,
-        max_value=0.5,
-        step=0.01,
-        key="sidebar_grid_resolution",
-        help="Cell size for 2.5D grid integration. Smaller = more detail "
-        "but slower. 0.05 m is recommended for most piles.",
-    )
+    if admin_mode:
+        st.sidebar.subheader("📐 Volume Computation")
+        st.sidebar.slider(
+            "Grid resolution (m)",
+            min_value=0.01,
+            max_value=0.5,
+            step=0.01,
+            key="sidebar_grid_resolution",
+            help="Cell size for 2.5D grid integration. Smaller = more detail "
+            "but slower. 0.05 m is recommended for most piles.",
+        )
 
     config = build_pipeline_config_from_state()
     st.session_state["manual_scale_override"] = (
