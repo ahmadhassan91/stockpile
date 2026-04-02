@@ -58,6 +58,13 @@ if st.session_state.get("video_path") is None:
     st.warning("No video uploaded. Go to the Upload page first.")
     st.stop()
 
+if not st.session_state.get("settings_confirmed"):
+    st.warning(
+        "Settings for this upload have not been confirmed yet. "
+        "Go back to the Upload page, review the suggested settings, and continue from there."
+    )
+    st.stop()
+
 config = st.session_state.get("pipeline_config", PipelineConfig())
 
 # Apply manual scale override from sidebar
@@ -68,9 +75,13 @@ config.manual_scale_override = manual_scale
 with st.expander("Current Settings"):
     st.write(f"- **Material**: {config.material_name} ({config.material_density:.0f} kg/m³)")
     st.write(f"- **Cone height**: {config.scale_calibration.known_cone_height_m:.2f} m")
+    st.write(f"- **Camera height**: {config.scale_calibration.assumed_camera_height_m:.2f} m")
     st.write(f"- **Frame interval**: {config.frame_extraction.interval_sec:.1f}s")
+    st.write(f"- **Max frames**: {config.frame_extraction.max_frames}")
     st.write(f"- **COLMAP quality**: {config.colmap.quality}")
     st.write(f"- **Grid resolution**: {config.volume.grid_resolution:.2f} m")
+    if config.manual_scale_override is not None:
+        st.write(f"- **Manual scale override**: {config.manual_scale_override:.4f} m/unit")
 
 # Run button
 if not st.session_state.get("pipeline_running", False):
