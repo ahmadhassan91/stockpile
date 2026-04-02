@@ -160,7 +160,10 @@ if result and not st.session_state.get("pipeline_running"):
     if result.error:
         st.error(f"Last run failed at stage '{result.stage}': {result.error}")
     else:
-        st.success("✅ Processing complete! Navigate to the **Results** page to review the output.")
+        if result.publishable:
+            st.success("✅ Processing complete! Navigate to the **Results** page to review the output.")
+        else:
+            st.error("🚫 Processing completed, but the measurement was flagged for review before reporting.")
         st.divider()
 
         # Row 1: reconstruction stats
@@ -176,7 +179,7 @@ if result and not st.session_state.get("pipeline_running"):
             conf_pct = cal.confidence * 100
             conf_icon = "🟢" if conf_pct >= 70 else ("🟡" if conf_pct >= 40 else "🔴")
             col1, col2, col3, col4 = st.columns(4)
-            col1.metric("Scale Factor", f"{cal.scale_factor:.4f} m/unit")
+            col1.metric("Scale Factor", f"{(result.scale_factor_m_per_unit or cal.scale_factor):.4f} m/unit")
             col2.metric("Cal. Confidence", f"{conf_pct:.0f}%")
             col3.metric("Cones Used", str(cal.num_cones_used))
             if result.volume:
@@ -194,9 +197,24 @@ if result and not st.session_state.get("pipeline_running"):
                     "Results are indicative — verify against a reference measurement."
                 )
         else:
-            st.error(
-                "🔴 **No scale calibration** — cones were not detected in any frame. "
-                "Volume is in arbitrary COLMAP units and is not usable. "
-                "Check that red traffic cones are clearly visible in the video, or use manual scale override."
-            )
+            if result.scale_source == "manual_override" and result.scale_factor_m_per_unit is not None:
+                st.info(
+                    f"ℹ️ Manual scale override was used at {result.scale_factor_m_per_unit:.4f} m/unit. "
+                    "Auto-calibration diagnostics are not available for this run."
+                )
+            else:
+                st.error(
+                    "🔴 **No scale calibration** — cones were not detected in any frame. "
+                    "Volume is in arbitrary COLMAP units and is not usable. "
+                    "Check that red traffic cones are clearly visible in the video, or use manual scale override."
+                )
 
+        if result.quality_blockers:
+            st.markdown("**Reliability blockers**")
+            for blocker in result.quality_blockers:
+                st.write(f"- {blocker}")
+
+        if result.quality_warnings:
+            st.markdown("**Reliability warnings**")
+            for warning in result.quality_warnings:
+                st.write(f"- {warning}")

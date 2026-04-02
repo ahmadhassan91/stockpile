@@ -48,6 +48,7 @@ class ScaleCalibrationConfig:
     dbscan_eps: float = 0.5  # In COLMAP units, tuned during calibration
     dbscan_min_samples: int = 3
     min_cones_for_confidence: int = 3
+    max_method_disagreement_ratio: float = 1.75
 
 
 @dataclass
@@ -64,6 +65,26 @@ class GroundPlaneConfig:
 class VolumeConfig:
     grid_resolution: float = 0.05  # meters per cell for 2.5D method
     alpha: float = 0.3  # alpha shape parameter
+    recommended_min_grid_occupancy_pct: float = 3.0
+    recommended_max_grid_to_hull_ratio: float = 4.0
+
+
+@dataclass
+class QualityGateConfig:
+    min_calibration_confidence_warn: float = 0.40
+    min_calibration_confidence_block: float = 0.25
+    min_unique_cones_warn: int = 3
+    min_unique_cones_block: int = 2
+    max_scale_disagreement_warn: float = 1.5
+    max_scale_disagreement_block: float = 2.0
+    min_pile_points_warn: int = 5000
+    min_pile_points_block: int = 1500
+    min_grid_occupancy_warn_pct: float = 5.0
+    min_grid_occupancy_block_pct: float = 1.0
+    max_grid_to_hull_warn_ratio: float = 2.5
+    max_grid_to_hull_block_ratio: float = 5.0
+    max_pile_height_warn_m: float = 8.0
+    max_pile_height_block_m: float = 12.0
 
 
 # Material presets — names and max bulk densities from the site density table.
@@ -91,6 +112,7 @@ class PipelineConfig:
     scale_calibration: ScaleCalibrationConfig = field(default_factory=ScaleCalibrationConfig)
     ground_plane: GroundPlaneConfig = field(default_factory=GroundPlaneConfig)
     volume: VolumeConfig = field(default_factory=VolumeConfig)
+    quality_gates: QualityGateConfig = field(default_factory=QualityGateConfig)
     material_density: float = 2100.0  # kg/m3 — default: Backfill 0-75mm max density
     material_name: str = "Backfill 0\u201375 mm"
     manual_scale_override: Optional[float] = None  # If set, bypass auto calibration

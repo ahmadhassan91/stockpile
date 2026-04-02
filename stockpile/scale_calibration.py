@@ -1,7 +1,7 @@
 """Scale calibration: compute real-world scale from cone detections + COLMAP data."""
 
 import logging
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 
 import numpy as np
 
@@ -19,6 +19,13 @@ class CalibrationResult:
     num_cones_used: int
     per_cone_scales: list[float]
     cone_3d_positions: list[np.ndarray]
+    selected_method: str = "projection"
+    projection_scale_factor: float | None = None
+    projection_confidence: float | None = None
+    camera_height_scale_factor: float | None = None
+    camera_height_confidence: float | None = None
+    scale_disagreement_ratio: float | None = None
+    notes: list[str] = field(default_factory=list)
 
 
 def _qvec_to_rotmat(qvec: np.ndarray) -> np.ndarray:
@@ -152,6 +159,9 @@ def calibrate_scale_projection(
         num_cones_used=len(unique_positions),
         per_cone_scales=per_frame_scales,
         cone_3d_positions=unique_positions,
+        selected_method="projection",
+        projection_scale_factor=scale_factor,
+        projection_confidence=confidence,
     )
 
 
@@ -270,6 +280,9 @@ def calibrate_scale_from_camera_height(
         num_cones_used=0,
         per_cone_scales=[best_scale],
         cone_3d_positions=[],
+        selected_method="camera_height",
+        camera_height_scale_factor=best_scale,
+        camera_height_confidence=best_consistency * 0.6,
     )
 
 
@@ -316,8 +329,19 @@ def calibrate_scale(
     # Camera-height is only a fallback assumption (1.6m handheld) and introduces
     # systematic bias when the actual camera height differs.
     if projection_result and camera_result:
-        ratio = projection_result.scale_factor / camera_result.scale_factor
-        if 0.5 < ratio < 2.0:
+        ratio = max(
+            projection_result.scale_factor / camera_result.scale_factor,
+            camera_result.scale_factor / projection_result.scale_factor,
+        )
+        projection_result.camera_height_scale_factor = camera_result.scale_factor
+        projection_result.camera_height_confidence = camera_result.confidence
+        projection_result.scale_disagreement_ratio = ratio
+        projection_result.notes.append(
+            "Projection and camera-height scale checks disagree"
+            if ratio >= config.max_method_disagreement_ratio
+            else "Projection and camera-height scale checks are broadly aligned"
+        )
+        if ratio < config.max_method_disagreement_ratio:
             logger.info(
                 "Using projection scale %.4f (camera-height was %.4f, ratio %.2f)",
                 projection_result.scale_factor, camera_result.scale_factor, ratio,
@@ -329,9 +353,9 @@ def calibrate_scale(
                 projection_result.scale_factor, camera_result.scale_factor, ratio,
             )
         return projection_result
-    elif projection_result:
+    if projection_result:
         return projection_result
-    elif camera_result:
+    if camera_result:
+        camera_result.notes.append("Using camera-height fallback because projection calibration was unavailable")
         return camera_result
-    else:
-        raise ValueError("All calibration methods failed")
+    raise ValueError("All calibration methods failed")

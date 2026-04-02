@@ -23,11 +23,35 @@ if result is None or result.error:
 vol = result.volume
 config = st.session_state.get("pipeline_config")
 
+if not result.publishable:
+    st.error(
+        "🚫 **Review only — this run failed one or more reliability checks.** "
+        "Do not use the reported tonnage for client-facing reporting until the blockers below are addressed."
+    )
+elif result.quality_warnings:
+    st.warning(
+        "⚠️ **This run completed with reliability warnings.** "
+        "Treat the result as indicative and cross-check it against a survey or weighbridge reference."
+    )
+
+if result.quality_blockers:
+    st.markdown("**Reliability blockers**")
+    for blocker in result.quality_blockers:
+        st.write(f"- {blocker}")
+
+if result.quality_warnings:
+    st.markdown("**Reliability warnings**")
+    for warning in result.quality_warnings:
+        st.write(f"- {warning}")
+
+st.divider()
+
 # ── Scale Calibration Diagnostics ─────────────────────────────────────────────
 st.subheader("📏 Scale Calibration")
 
 if result.calibration:
     cal = result.calibration
+    scale_factor = result.scale_factor_m_per_unit or cal.scale_factor
     conf_pct = cal.confidence * 100
 
     # Classify confidence level
@@ -42,10 +66,10 @@ if result.calibration:
         conf_label = "Low — consider using manual scale override"
 
     col1, col2, col3, col4 = st.columns(4)
-    col1.metric("Scale Factor", f"{cal.scale_factor:.4f} m/unit")
+    col1.metric("Scale Factor", f"{scale_factor:.4f} m/unit")
     col2.metric("Confidence", f"{conf_pct:.0f}%", help="Based on cone detection consistency across frames")
     col3.metric("Cones Detected", str(cal.num_cones_used))
-    col4.metric("Calibration Frames", str(len(cal.per_cone_scales)))
+    col4.metric("Scale Source", result.scale_source.replace("_", " ").title())
 
     if conf_pct < 70:
         st.warning(
@@ -72,13 +96,30 @@ if result.calibration:
                     "⚠️ High variation (CV > 30%) across cone measurements. "
                     "Cones may have been partially occluded or the wrong size was configured."
                 )
+
+    if cal.scale_disagreement_ratio:
+        st.caption(
+            f"Cross-check ratio: {cal.scale_disagreement_ratio:.2f}x "
+            f"(projection {cal.projection_scale_factor:.4f} vs camera-height {cal.camera_height_scale_factor:.4f} m/unit)"
+        )
+        if cal.scale_disagreement_ratio > 1.5:
+            st.warning(
+                "⚠️ The cone-based scale and the camera-height cross-check disagree materially. "
+                "This is a strong signal that the geometry or cone matches need review."
+            )
 else:
-    st.error(
-        "🔴 **No scale calibration was performed** — no cones were detected in the video. "
-        "The volume is in raw COLMAP units and is **not meaningful**. "
-        "\n\nTo fix: upload a video with visible red traffic cones, or enable the "
-        "'Override auto-detected scale' option in the sidebar and enter a known scale factor."
-    )
+    if result.scale_source == "manual_override" and result.scale_factor_m_per_unit is not None:
+        st.info(
+            f"ℹ️ **Manual scale override was used** at {result.scale_factor_m_per_unit:.4f} m/unit. "
+            "Cone-based auto-calibration diagnostics are not available for this run."
+        )
+    else:
+        st.error(
+            "🔴 **No scale calibration was performed** — no cones were detected in the video. "
+            "The volume is in raw COLMAP units and is **not meaningful**. "
+            "\n\nTo fix: upload a video with visible red traffic cones, or enable the "
+            "'Override auto-detected scale' option in the sidebar and enter a known scale factor."
+        )
 
 st.divider()
 
@@ -98,6 +139,15 @@ if pile_pts < 500:
         "Volume accuracy will be limited. Try reducing the frame interval or using higher COLMAP quality."
     )
 
+if vol:
+    col1, col2, col3 = st.columns(3)
+    col1.metric("Grid Occupancy", f"{vol.grid_occupancy_pct:.1f}%")
+    if vol.grid_to_hull_ratio is not None:
+        col2.metric("Grid / Hull Ratio", f"{vol.grid_to_hull_ratio:.2f}x")
+    else:
+        col2.metric("Grid / Hull Ratio", "N/A")
+    col3.metric("Recommended Method", vol.recommended_method.replace("_", " ").title())
+
 st.divider()
 
 # ── Volume Results ─────────────────────────────────────────────────────────────
@@ -105,9 +155,9 @@ st.subheader("📦 Volume & Weight")
 
 col1, col2, col3 = st.columns(3)
 col1.metric(
-    "Volume (recommended)",
+    "Volume (recommended)" if result.publishable else "Volume (review only)",
     f"{vol.recommended_m3:.2f} m³",
-    help="2.5D grid integration — most accurate for stockpiles",
+    help="The selected output after applying volume sanity checks",
 )
 col2.metric(
     "Weight",
@@ -126,16 +176,19 @@ else:
 st.subheader("Volume Method Comparison")
 st.caption(
     "All three methods are shown so you can cross-check. "
-    "Convex Hull is typically an upper bound; Grid Integration is the recommended value."
+    "Convex Hull is typically an upper bound; Grid Integration is the preferred value when coverage is strong."
 )
 
 c1, c2, c3 = st.columns(3)
 with c1:
     st.metric(
-        "🔵 Grid Integration (Recommended)",
+        "🔵 Grid Integration",
         f"{vol.grid_integration_m3:.2f} m³",
     )
-    st.caption(f"Grid: {vol.grid_resolution:.2f} m cells, {vol.num_points:,} pile points")
+    st.caption(
+        f"Grid: {vol.grid_resolution:.2f} m cells, {vol.num_points:,} pile points, "
+        f"{vol.grid_occupancy_pct:.1f}% occupancy"
+    )
 
 with c2:
     st.metric(
@@ -154,6 +207,9 @@ with c3:
     else:
         st.metric("🟢 Alpha Shape", "N/A")
         st.caption("Failed or non-watertight — insufficient point density")
+
+if vol.recommended_note:
+    st.info(f"Using {vol.recommended_method.replace('_', ' ')}: {vol.recommended_note}")
 
 # Sanity check: flag if convex hull is > 3× grid integration (indicates volume loss)
 if vol.convex_hull_m3 > 0 and vol.grid_integration_m3 > 0:

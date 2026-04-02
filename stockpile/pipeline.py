@@ -34,12 +34,17 @@ class PipelineResult:
     calibration: CalibrationResult | None = None
     volume: VolumeResult | None = None
     weight_kg: float = 0.0
+    scale_factor_m_per_unit: float | None = None
+    scale_source: str = "auto"
     pile_cloud: o3d.geometry.PointCloud | None = None
     ground_cloud: o3d.geometry.PointCloud | None = None
     cone_3d_positions: list[np.ndarray] = field(default_factory=list)
     sparse_model_dir: Path | None = None
     ply_path: Path | None = None
     stage: str = ""
+    quality_blockers: list[str] = field(default_factory=list)
+    quality_warnings: list[str] = field(default_factory=list)
+    publishable: bool = True
     error: str | None = None
 
 
@@ -61,6 +66,120 @@ class Pipeline:
         if self.config.progress_callback:
             self.config.progress_callback(stage, progress, message)
         logger.info("[%s] %.0f%% %s", stage, progress * 100, message)
+
+    def _add_warning(self, result: PipelineResult, message: str):
+        if message not in result.quality_warnings:
+            result.quality_warnings.append(message)
+
+    def _add_blocker(self, result: PipelineResult, message: str):
+        if message not in result.quality_blockers:
+            result.quality_blockers.append(message)
+
+    def _assess_measurement_quality(self, result: PipelineResult):
+        gates = self.config.quality_gates
+        manual_scale = self.config.manual_scale_override is not None
+
+        pile_pts = np.asarray(result.pile_cloud.points) if result.pile_cloud else np.empty((0, 3))
+        pile_count = len(pile_pts)
+        pile_height = float(np.max(pile_pts[:, 2])) if pile_count else 0.0
+
+        if pile_count < gates.min_pile_points_block:
+            self._add_blocker(
+                result,
+                f"Only {pile_count:,} pile points were reconstructed; the pile surface is too sparse for a reliable measurement.",
+            )
+        elif pile_count < gates.min_pile_points_warn:
+            self._add_warning(
+                result,
+                f"Only {pile_count:,} pile points were reconstructed; the estimate should be reviewed against a reference.",
+            )
+
+        if pile_height > gates.max_pile_height_block_m:
+            self._add_blocker(
+                result,
+                f"Pile height reached {pile_height:.2f} m, which is outside the expected operating envelope and suggests a bad scale or segmentation run.",
+            )
+        elif pile_height > gates.max_pile_height_warn_m:
+            self._add_warning(
+                result,
+                f"Pile height reached {pile_height:.2f} m, which is unusually high and should be checked against site conditions.",
+            )
+
+        if result.calibration and not manual_scale:
+            cal = result.calibration
+            if cal.confidence < gates.min_calibration_confidence_block:
+                self._add_blocker(
+                    result,
+                    f"Calibration confidence is only {cal.confidence:.0%}; scale is too unstable for reporting.",
+                )
+            elif cal.confidence < gates.min_calibration_confidence_warn:
+                self._add_warning(
+                    result,
+                    f"Calibration confidence is {cal.confidence:.0%}; scale should be verified before reporting.",
+                )
+
+            if cal.num_cones_used < gates.min_unique_cones_block:
+                self._add_blocker(
+                    result,
+                    f"Only {cal.num_cones_used} unique cone reference(s) were recovered; more physical references are needed.",
+                )
+            elif cal.num_cones_used < gates.min_unique_cones_warn:
+                self._add_warning(
+                    result,
+                    f"Only {cal.num_cones_used} unique cone references were recovered; scale robustness is limited.",
+                )
+
+            if cal.scale_disagreement_ratio:
+                if cal.scale_disagreement_ratio > gates.max_scale_disagreement_block:
+                    self._add_blocker(
+                        result,
+                        f"Scale cross-checks disagree by {cal.scale_disagreement_ratio:.1f}x, so the run should not be trusted.",
+                    )
+                elif cal.scale_disagreement_ratio > gates.max_scale_disagreement_warn:
+                    self._add_warning(
+                        result,
+                        f"Scale cross-checks disagree by {cal.scale_disagreement_ratio:.1f}x, so the result should be verified carefully.",
+                    )
+        elif result.calibration is None and not manual_scale:
+            self._add_blocker(
+                result,
+                "No cone-based scale calibration was available, so the measurement is still in raw COLMAP units.",
+            )
+        elif manual_scale:
+            self._add_warning(
+                result,
+                "Manual scale override was used. Confirm the reference distance before reporting the result.",
+            )
+
+        if result.volume:
+            vol = result.volume
+            if vol.grid_occupancy_pct < gates.min_grid_occupancy_block_pct:
+                self._add_blocker(
+                    result,
+                    f"Only {vol.grid_occupancy_pct:.1f}% of grid cells had observed pile data; the volume is dominated by interpolation.",
+                )
+            elif vol.grid_occupancy_pct < gates.min_grid_occupancy_warn_pct:
+                self._add_warning(
+                    result,
+                    f"Only {vol.grid_occupancy_pct:.1f}% of grid cells had observed pile data; the volume should be cross-checked.",
+                )
+
+            if vol.grid_to_hull_ratio is not None:
+                if vol.grid_to_hull_ratio > gates.max_grid_to_hull_block_ratio:
+                    self._add_blocker(
+                        result,
+                        f"Grid volume is {vol.grid_to_hull_ratio:.1f}x the convex hull volume, which indicates runaway extrapolation.",
+                    )
+                elif vol.grid_to_hull_ratio > gates.max_grid_to_hull_warn_ratio:
+                    self._add_warning(
+                        result,
+                        f"Grid volume is {vol.grid_to_hull_ratio:.1f}x the convex hull volume; edge interpolation may be inflating the estimate.",
+                    )
+
+            if vol.recommended_note:
+                self._add_warning(result, vol.recommended_note)
+
+        result.publishable = not result.quality_blockers
 
     def run(self, video_path: str | Path) -> PipelineResult:
         """Run the full pipeline on a video file."""
@@ -150,6 +269,7 @@ class Pipeline:
 
             if self.config.manual_scale_override is not None:
                 scale_factor = self.config.manual_scale_override
+                result.scale_source = "manual_override"
                 if cone_detections:
                     try:
                         calibration = calibrate_scale(
@@ -160,6 +280,7 @@ class Pipeline:
                         result.cone_3d_positions = calibration.cone_3d_positions
                     except Exception:
                         pass
+                result.scale_factor_m_per_unit = scale_factor
                 self._report("scale_calibration", 1.0,
                              f"Manual scale override: {scale_factor:.4f} m/unit")
             elif cone_detections:
@@ -170,10 +291,14 @@ class Pipeline:
                 result.calibration = calibration
                 result.cone_3d_positions = calibration.cone_3d_positions
                 scale_factor = calibration.scale_factor
+                result.scale_factor_m_per_unit = scale_factor
+                result.scale_source = calibration.selected_method
                 self._report("scale_calibration", 1.0,
                              f"Scale: {scale_factor:.4f} m/unit, confidence: {calibration.confidence:.2f}")
             else:
                 scale_factor = 1.0
+                result.scale_factor_m_per_unit = scale_factor
+                result.scale_source = "unit_scale"
                 self._report("scale_calibration", 1.0,
                              "No cones — using unit scale (results in COLMAP units)")
 
@@ -215,9 +340,17 @@ class Pipeline:
             vol = compute_volume(gp_result.pile_cloud, self.config.volume)
             result.volume = vol
             result.weight_kg = vol.recommended_m3 * self.config.material_density
+            self._assess_measurement_quality(result)
 
-            self._report("volume_computation", 1.0,
-                         f"Volume: {vol.recommended_m3:.2f} m³, Weight: {result.weight_kg:.0f} kg")
+            if result.publishable:
+                self._report("volume_computation", 1.0,
+                             f"Volume: {vol.recommended_m3:.2f} m³, Weight: {result.weight_kg:.0f} kg")
+            else:
+                self._report(
+                    "volume_computation",
+                    1.0,
+                    "Measurement flagged for review: " + "; ".join(result.quality_blockers[:2]),
+                )
 
             result.stage = "complete"
 
