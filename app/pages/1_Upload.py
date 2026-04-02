@@ -2,6 +2,7 @@
 
 import tempfile
 from pathlib import Path
+import re
 
 import cv2
 import streamlit as st
@@ -58,6 +59,31 @@ def apply_dialog_settings():
     st.session_state.confirmed_settings_signature = get_pipeline_setting_signature()
 
 
+def infer_material_from_filename(filename: str) -> str | None:
+    """Infer the material preset from the uploaded filename when possible."""
+    normalized = re.sub(r"[^a-z0-9]+", " ", filename.lower())
+
+    if "backfill" in normalized and re.search(r"\b0\s*75\s*mm\b", normalized):
+        return "Backfill 0–75 mm"
+    if "aggregate" in normalized and re.search(r"\b5\s*14\s*mm\b", normalized):
+        return "Aggregates 5–14 mm"
+    if "aggregate" in normalized and re.search(r"\b10\s*20\s*mm\b", normalized):
+        return "Aggregates 10–20 mm"
+    return None
+
+
+def apply_upload_material_hint(filename: str):
+    """Apply a filename-based material suggestion into sidebar and dialog state."""
+    inferred_material = infer_material_from_filename(filename)
+    st.session_state["upload_inferred_material"] = inferred_material
+    if inferred_material is None:
+        return
+
+    st.session_state["sidebar_material_select"] = inferred_material
+    st.session_state["sidebar_density_input"] = float(DENSITY_PRESETS[inferred_material])
+    persist_pipeline_selection_metadata()
+
+
 def build_upload_setting_notes(video_info: dict | None, detections: list | None):
     """Generate practical notes from the uploaded video and current dialog values."""
     notes = [
@@ -70,6 +96,13 @@ def build_upload_setting_notes(video_info: dict | None, detections: list | None)
     max_frames = int(st.session_state.get("dialog_max_frames", 800))
     quality = st.session_state.get("dialog_colmap_quality", "medium")
     manual_scale_enabled = bool(st.session_state.get("dialog_manual_scale_enabled", False))
+    inferred_material = st.session_state.get("upload_inferred_material")
+
+    if inferred_material:
+        notes.append(
+            f"Material was auto-suggested from the filename as **{inferred_material}**. "
+            "Please confirm it matches the actual stockpile before continuing."
+        )
 
     if video_info:
         estimated_frames = max(1, int(video_info["duration"] / max(interval, 0.01)))
@@ -290,6 +323,7 @@ if uploaded is not None:
         st.session_state["last_uploaded_name"] = uploaded.name
         st.session_state["_upload_processed"] = False
         st.session_state["video_path"] = None
+        apply_upload_material_hint(uploaded.name)
         seed_settings_dialog_from_sidebar(force=True)
 
     # ── Write + process only once per uploaded file ────────────────────────
