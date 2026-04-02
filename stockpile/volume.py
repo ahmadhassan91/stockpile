@@ -94,20 +94,49 @@ def _sample_polygon_boundary(polygon_xy: np.ndarray, spacing_m: float) -> np.nda
     return np.array(samples) if samples else polygon_xy
 
 
+def _polygon_area(polygon_xy: np.ndarray | None) -> float | None:
+    """Compute polygon area from a convex vertex list."""
+    if polygon_xy is None or len(polygon_xy) < 3:
+        return None
+    try:
+        return float(ConvexHull(polygon_xy).volume)
+    except Exception:
+        return None
+
+
 def _build_footprint_polygon(
     points_xy: np.ndarray,
     footprint_xy: np.ndarray | None,
     buffer_m: float,
+    min_cone_area_ratio: float,
 ) -> tuple[np.ndarray | None, str | None]:
     """Choose a footprint polygon from cones when available, otherwise observed pile points."""
+    cone_polygon = None
+    cone_area = None
     if footprint_xy is not None and len(footprint_xy) >= 3:
-        polygon = _convex_polygon(np.asarray(footprint_xy))
-        if polygon is not None:
-            return _expand_polygon_radially(polygon, buffer_m), "cone_hull"
+        cone_polygon = _convex_polygon(np.asarray(footprint_xy))
+        cone_area = _polygon_area(cone_polygon)
 
-    polygon = _convex_polygon(points_xy)
-    if polygon is not None:
-        return _expand_polygon_radially(polygon, buffer_m), "observed_hull"
+    observed_polygon = _convex_polygon(points_xy)
+    observed_area = _polygon_area(observed_polygon)
+
+    if cone_polygon is not None and observed_polygon is not None and cone_area and observed_area:
+        if cone_area >= observed_area * min_cone_area_ratio:
+            return _expand_polygon_radially(cone_polygon, buffer_m), "cone_hull"
+        logger.info(
+            "Cone footprint area %.2f m² is smaller than %.0f%% of observed hull area %.2f m²; "
+            "using observed hull footprint instead.",
+            cone_area,
+            min_cone_area_ratio * 100,
+            observed_area,
+        )
+        return _expand_polygon_radially(observed_polygon, buffer_m), "observed_hull_fallback"
+
+    if cone_polygon is not None:
+        return _expand_polygon_radially(cone_polygon, buffer_m), "cone_hull"
+
+    if observed_polygon is not None:
+        return _expand_polygon_radially(observed_polygon, buffer_m), "observed_hull"
 
     return None, None
 
@@ -145,6 +174,7 @@ def volume_grid_integration(
     resolution: float = 0.05,
     footprint_xy: np.ndarray | None = None,
     footprint_buffer_m: float = 0.75,
+    min_cone_footprint_area_ratio: float = 0.7,
 ) -> GridIntegrationResult:
     """2.5D grid integration: project onto XY grid, sum cell_area × max_height.
 
@@ -167,6 +197,7 @@ def volume_grid_integration(
         points_xy,
         footprint_xy,
         footprint_buffer_m,
+        min_cone_footprint_area_ratio,
     )
 
     if footprint_polygon is not None:
@@ -335,6 +366,7 @@ def compute_volume(
         config.grid_resolution,
         footprint_xy=footprint_xy,
         footprint_buffer_m=config.footprint_buffer_m,
+        min_cone_footprint_area_ratio=config.min_cone_footprint_area_ratio,
     )
     grid_vol = grid_stats.volume_m3
     grid_to_hull_ratio = (grid_vol / hull_vol) if hull_vol > 0 else None
