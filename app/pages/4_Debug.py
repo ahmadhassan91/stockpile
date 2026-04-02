@@ -141,6 +141,10 @@ if result and result.pile_cloud:
     if len(pile_pts) > 0:
         st.write(f"**Pile points**: {len(pile_pts)}")
         st.write(f"**Height range**: {pile_pts[:, 2].min():.3f} — {pile_pts[:, 2].max():.3f} m")
+        if len(pile_pts) >= 100:
+            p99 = float(np.percentile(pile_pts[:, 2], 99))
+            st.write(f"**99th percentile height**: {p99:.3f} m")
+            st.write(f"**Peak relief over P99**: {pile_pts[:, 2].max() - p99:.3f} m")
         st.write(f"**XY extent**: {np.ptp(pile_pts[:, 0]):.2f} × {np.ptp(pile_pts[:, 1]):.2f} m")
 
     if result.ground_cloud:

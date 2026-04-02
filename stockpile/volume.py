@@ -74,26 +74,6 @@ def _expand_polygon_radially(polygon_xy: np.ndarray, margin_m: float) -> np.ndar
     return expanded
 
 
-def _sample_polygon_boundary(polygon_xy: np.ndarray, spacing_m: float) -> np.ndarray:
-    """Sample evenly-spaced points along a closed polygon boundary."""
-    if len(polygon_xy) < 2:
-        return polygon_xy
-
-    spacing_m = max(spacing_m, 1e-3)
-    samples = []
-    closed = np.vstack([polygon_xy, polygon_xy[0]])
-    for start, end in zip(closed[:-1], closed[1:]):
-        edge = end - start
-        length = np.linalg.norm(edge)
-        if length < 1e-8:
-            continue
-        count = max(2, int(np.ceil(length / spacing_m)))
-        for t in np.linspace(0.0, 1.0, count, endpoint=False):
-            samples.append(start + edge * t)
-
-    return np.array(samples) if samples else polygon_xy
-
-
 def _polygon_area(polygon_xy: np.ndarray | None) -> float | None:
     """Compute polygon area from a convex vertex list."""
     if polygon_xy is None or len(polygon_xy) < 3:
@@ -265,29 +245,13 @@ def volume_grid_integration(
         from scipy.interpolate import griddata
 
         # Get coordinates of known cells
-        known_ij = np.argwhere(valid)
         known_vals = height_grid[valid]
         known_xy = np.column_stack([cx[valid], cy[valid]])
-
-        boundary_xy = None
-        if footprint_polygon is not None:
-            boundary_xy = _sample_polygon_boundary(
-                footprint_polygon,
-                spacing_m=max(resolution * 2.0, footprint_buffer_m / 2 if footprint_buffer_m > 0 else resolution),
-            )
-
-        if boundary_xy is not None and len(boundary_xy) > 0:
-            aug_xy = np.vstack([known_xy, boundary_xy])
-            aug_vals = np.concatenate([known_vals, np.zeros(len(boundary_xy))])
-        else:
-            aug_xy = known_xy
-            aug_vals = known_vals
-
         query_xy = np.column_stack([cx[inside_footprint], cy[inside_footprint]])
         try:
-            interpolated_vals = griddata(aug_xy, aug_vals, query_xy, method="linear")
+            interpolated_vals = griddata(known_xy, known_vals, query_xy, method="linear")
             if np.isnan(interpolated_vals).any():
-                nearest_vals = griddata(aug_xy, aug_vals, query_xy, method="nearest")
+                nearest_vals = griddata(known_xy, known_vals, query_xy, method="nearest")
                 interpolated_vals[np.isnan(interpolated_vals)] = nearest_vals[np.isnan(interpolated_vals)]
 
             height_grid_filled = np.zeros_like(height_grid)

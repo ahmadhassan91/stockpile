@@ -127,16 +127,26 @@ st.divider()
 pile_pts = len(result.pile_cloud.points) if result.pile_cloud else 0
 ground_pts = len(result.ground_cloud.points) if result.ground_cloud else 0
 total_pts = pile_pts + ground_pts
+pile_arr = np.asarray(result.pile_cloud.points) if result.pile_cloud and len(result.pile_cloud.points) else np.empty((0, 3))
+pile_height_p99 = float(np.percentile(pile_arr[:, 2], 99)) if len(pile_arr) >= 100 else None
+peak_relief = (float(np.max(pile_arr[:, 2])) - pile_height_p99) if pile_height_p99 is not None else None
 
-col1, col2, col3 = st.columns(3)
+col1, col2, col3, col4 = st.columns(4)
 col1.metric("COLMAP 3D Points", f"{result.num_colmap_points:,}")
 col2.metric("Pile Points", f"{pile_pts:,}")
 col3.metric("Ground Points", f"{ground_pts:,}")
+col4.metric("P99 Height", f"{pile_height_p99:.2f} m" if pile_height_p99 is not None else "N/A")
 
 if pile_pts < 500:
     st.warning(
         f"⚠️ Only **{pile_pts} pile points** were segmented — this is very sparse. "
         "Volume accuracy will be limited. Try reducing the frame interval or using higher COLMAP quality."
+    )
+
+if peak_relief is not None and peak_relief > 1.0:
+    st.warning(
+        f"⚠️ The very top of the reconstructed pile rises {peak_relief:.2f} m above the 99th-percentile surface height. "
+        "Review the 3D shape for ridge or spike artifacts."
     )
 
 if vol:
