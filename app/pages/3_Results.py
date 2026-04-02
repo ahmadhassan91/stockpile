@@ -8,6 +8,7 @@ from stockpile.visualization import build_3d_figure
 import sys
 from pathlib import Path
 sys.path.insert(0, str(Path(__file__).parent.parent))
+from components.reliability_status import classify_result_status, render_status_callout
 from components.session_init import init_session_state
 
 init_session_state()
@@ -23,21 +24,7 @@ if result is None or result.error:
 vol = result.volume
 config = st.session_state.get("pipeline_config")
 
-if not result.publishable:
-    st.error(
-        "🚫 **Review only — this run failed one or more reliability checks.** "
-        "Do not use the reported tonnage for client-facing reporting until the blockers below are addressed."
-    )
-elif getattr(result, "review_grade", False):
-    st.warning(
-        "🟡 **Review-grade result — the reconstructed pile looks usable, but scale confidence is limited by a single recovered cone.** "
-        "Use this for internal review or side-by-side comparison, and cross-check before client-facing reporting."
-    )
-elif result.quality_warnings:
-    st.warning(
-        "⚠️ **This run completed with reliability warnings.** "
-        "Treat the result as indicative and cross-check it against a survey or weighbridge reference."
-    )
+render_status_callout(classify_result_status(result))
 
 if result.quality_blockers:
     st.markdown("**Reliability blockers**")
@@ -200,7 +187,7 @@ st.subheader("📦 Volume & Weight")
 col1, col2, col3 = st.columns(3)
 col1.metric(
     "Volume (review-grade)" if getattr(result, "review_grade", False)
-    else ("Volume (recommended)" if result.publishable else "Volume (review only)"),
+    else ("Volume (verified)" if result.publishable else "Volume (review only)"),
     f"{vol.recommended_m3:.2f} m³",
     help="The selected output after applying volume sanity checks",
 )

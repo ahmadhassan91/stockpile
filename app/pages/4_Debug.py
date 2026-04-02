@@ -42,6 +42,7 @@ from stockpile.config import PipelineConfig
 
 import sys
 sys.path.insert(0, str(Path(__file__).parent.parent))
+from components.reliability_status import classify_result_status
 from components.session_init import init_session_state
 
 init_session_state()
@@ -171,6 +172,8 @@ else:
 
 st.subheader("Measurement Reliability")
 if result:
+    status = classify_result_status(result)
+    st.write(f"**Status**: {status.title}")
     st.write(f"**Publishable**: {'Yes' if result.publishable else 'No'}")
     st.write(f"**Review grade**: {'Yes' if getattr(result, 'review_grade', False) else 'No'}")
     if result.volume:

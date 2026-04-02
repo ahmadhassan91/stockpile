@@ -27,6 +27,7 @@ from stockpile.pipeline import Pipeline, PipelineResult
 import sys
 from pathlib import Path
 sys.path.insert(0, str(Path(__file__).parent.parent))
+from components.reliability_status import classify_result_status, render_status_callout
 from components.session_init import init_session_state
 
 init_session_state()
@@ -173,15 +174,7 @@ if result and not st.session_state.get("pipeline_running"):
     if result.error:
         st.error(f"Last run failed at stage '{result.stage}': {result.error}")
     else:
-        if result.publishable and getattr(result, "review_grade", False):
-            st.warning(
-                "🟡 Processing complete. This run is suitable for review-grade use, "
-                "but the scale should still be cross-checked before client reporting."
-            )
-        elif result.publishable:
-            st.success("✅ Processing complete! Navigate to the **Results** page to review the output.")
-        else:
-            st.error("🚫 Processing completed, but the measurement was flagged for review before reporting.")
+        render_status_callout(classify_result_status(result))
         st.divider()
 
         # Row 1: reconstruction stats

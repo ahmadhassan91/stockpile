@@ -22,6 +22,7 @@ from components.parameter_sidebar import (
     SIDEBAR_SETTING_KEYS,
 )
 from components.pipeline_presets import build_recommended_sidebar_overrides
+from components.reliability_status import classify_preflight_status, render_status_callout
 from components.session_init import init_session_state
 
 init_session_state()
@@ -201,7 +202,22 @@ def build_upload_setting_notes(video_info: dict | None, detections: list | None)
     if manual_scale_enabled:
         notes.append("Manual scale override is enabled and will take priority over auto scale.")
 
-    return notes, warnings
+    seen: set[str] = set()
+    deduped_notes: list[str] = []
+    for note in notes:
+        note = note.strip()
+        if note and note not in seen:
+            seen.add(note)
+            deduped_notes.append(note)
+
+    deduped_warnings: list[str] = []
+    for warning in warnings:
+        warning = warning.strip()
+        if warning and warning not in seen:
+            seen.add(warning)
+            deduped_warnings.append(warning)
+
+    return deduped_notes, deduped_warnings
 
 
 def apply_recommended_dialog_preset(material: str, video_info: dict | None, detections: list | None):
@@ -312,6 +328,12 @@ def settings_review_dialog(video_info: dict | None, detections: list | None):
     if profile_notes:
         st.caption("  \n".join(f"- {note}" for note in profile_notes))
 
+    preflight_status = classify_preflight_status(ai_preflight, detections, profile_label)
+    render_status_callout(
+        preflight_status,
+        prefix="**Capture preflight.** This is the likely trust level before the full reconstruction runs.",
+    )
+
     if ai_preflight is not None:
         if ai_preflight.retake_required:
             st.warning(
@@ -404,7 +426,7 @@ def settings_review_dialog(video_info: dict | None, detections: list | None):
             st.rerun()
 
 
-def render_settings_summary():
+def render_settings_summary(preflight_status=None):
     """Render a compact summary of the confirmed settings."""
     config = st.session_state.get("pipeline_config")
     manual_scale = st.session_state.get("manual_scale_override")
@@ -425,6 +447,11 @@ def render_settings_summary():
         summary_lines.append(f"**Manual scale override:** {manual_scale:.4f} m/unit")
 
     st.success("✅ Settings reviewed for this upload.")
+    if preflight_status is not None:
+        render_status_callout(
+            preflight_status,
+            prefix="**Capture preflight.** Final result status is assigned after reconstruction.",
+        )
     st.markdown("  \n".join(summary_lines))
 
 
@@ -540,6 +567,12 @@ if uploaded is not None:
         st.session_state["recommended_processing_profile"] = profile_label
         st.session_state["recommended_processing_notes"] = profile_notes
 
+    preflight_status = classify_preflight_status(
+        st.session_state.get("ai_preflight_result"),
+        detections,
+        st.session_state.get("recommended_processing_profile"),
+    )
+
     # Show the dialog if settings haven't been confirmed or dismissed yet
     if not st.session_state.get("settings_confirmed") and not st.session_state.get("settings_dialog_dismissed"):
         settings_review_dialog(info, detections)
@@ -555,7 +588,7 @@ if uploaded is not None:
     if st.session_state.get("settings_confirmed"):
         col_banner, col_change = st.columns([4, 1])
         with col_banner:
-            render_settings_summary()
+            render_settings_summary(preflight_status=preflight_status)
         with col_change:
             if st.button("✏️ Change", use_container_width=True, key="change_settings_review_btn"):
                 seed_settings_dialog_from_sidebar(force=True)
@@ -600,6 +633,12 @@ if uploaded is not None:
             st.success(
                 f"✅ Detected **{len(detections)} cone(s)** in the first frame. "
                 "Cone-based scaling should be available."
+            )
+
+        if not st.session_state.get("settings_confirmed"):
+            render_status_callout(
+                preflight_status,
+                prefix="**Capture preflight.** Use this status before you decide how much to trust the upcoming result.",
             )
 
 elif st.session_state.get("video_path"):
