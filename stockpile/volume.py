@@ -125,7 +125,7 @@ def volume_grid_integration(
     observed_cells = int(valid.sum())
     total_cells = int(valid.size)
     occupancy_pct = 100 * observed_cells / total_cells if total_cells else 0.0
-    interpolated = observed_cells >= 4 and observed_cells < total_cells
+    used_interpolation = observed_cells >= 4 and observed_cells < total_cells
 
     if valid.sum() >= 4:
         from scipy.interpolate import griddata
@@ -176,17 +176,17 @@ def volume_grid_integration(
         all_ij = np.column_stack([all_i.ravel(), all_j.ravel()])
 
         # Step 1: linear interpolation using augmented points (tapers to 0 at base)
-        interpolated = griddata(aug_ij, aug_vals, all_ij, method="linear")
-        interpolated = interpolated.reshape(height_grid.shape)
+        interpolated_grid = griddata(aug_ij, aug_vals, all_ij, method="linear")
+        interpolated_grid = interpolated_grid.reshape(height_grid.shape)
 
         # Step 2: nearest-neighbour for any remaining NaNs outside augmented hull
-        still_nan = np.isnan(interpolated)
+        still_nan = np.isnan(interpolated_grid)
         if still_nan.any():
             nearest = griddata(aug_ij, aug_vals, all_ij, method="nearest")
             nearest = nearest.reshape(height_grid.shape)
-            interpolated[still_nan] = nearest[still_nan]
+            interpolated_grid[still_nan] = nearest[still_nan]
 
-        height_grid_filled = np.maximum(interpolated, 0)
+        height_grid_filled = np.maximum(interpolated_grid, 0)
     else:
         height_grid_filled = np.where(valid, np.maximum(height_grid, 0), 0)
 
@@ -200,7 +200,7 @@ def volume_grid_integration(
         height_grid.shape[0],
         height_grid.shape[1],
         occupancy_pct,
-        ", interpolated" if interpolated else "",
+        ", interpolated" if used_interpolation else "",
     )
 
     return GridIntegrationResult(
@@ -208,7 +208,7 @@ def volume_grid_integration(
         occupancy_pct=occupancy_pct,
         observed_cells=observed_cells,
         total_cells=total_cells,
-        interpolated=interpolated,
+        interpolated=used_interpolation,
     )
 
 
