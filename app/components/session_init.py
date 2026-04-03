@@ -2,6 +2,11 @@
 
 import streamlit as st
 
+from components.persisted_session import (
+    PERSISTED_SESSION_RESTORED_KEY,
+    restore_session_snapshot,
+)
+
 
 def init_session_state():
     defaults = {
@@ -20,7 +25,18 @@ def init_session_state():
         "recommended_processing_notes": [],
         "ai_preflight_result": None,
         "ai_preflight_source": None,
+        "last_uploaded_name": None,
+        "last_uploaded_signature": None,
+        "_upload_processed": False,
+        "_video_info": None,
+        "progress_queue": None,
+        "pipeline_thread": None,
+        PERSISTED_SESSION_RESTORED_KEY: False,
     }
     for key, value in defaults.items():
         if key not in st.session_state:
             st.session_state[key] = value
+
+    if not st.session_state.get(PERSISTED_SESSION_RESTORED_KEY):
+        restore_session_snapshot(st.session_state)
+        st.session_state[PERSISTED_SESSION_RESTORED_KEY] = True

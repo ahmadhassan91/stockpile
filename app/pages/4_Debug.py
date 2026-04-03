@@ -50,7 +50,7 @@ init_session_state()
 st.header("4. Debug & Inspection")
 
 result = st.session_state.get("pipeline_result")
-config = st.session_state.get("pipeline_config", PipelineConfig())
+config = st.session_state.get("pipeline_config") or PipelineConfig()
 
 # Section 1: Frame Gallery with Cone Overlays
 st.subheader("Cone Detection Gallery")

@@ -27,6 +27,7 @@ from stockpile.pipeline import Pipeline, PipelineResult
 import sys
 from pathlib import Path
 sys.path.insert(0, str(Path(__file__).parent.parent))
+from components.persisted_session import clear_session_snapshot, persist_session_snapshot
 from components.reliability_status import classify_result_status, render_status_callout
 from components.session_init import init_session_state
 
@@ -66,7 +67,7 @@ if not st.session_state.get("settings_confirmed"):
     )
     st.stop()
 
-config = st.session_state.get("pipeline_config", PipelineConfig())
+config = st.session_state.get("pipeline_config") or PipelineConfig()
 
 # Apply manual scale override from sidebar
 manual_scale = st.session_state.get("manual_scale_override")
@@ -87,10 +88,15 @@ with st.expander("Current Settings"):
         st.write(f"- **Manual scale override**: {config.manual_scale_override:.4f} m/unit")
 
 # Run button
+result = st.session_state.get("pipeline_result")
+run_button_label = "Start Processing" if result is None else "Run Again"
 if not st.session_state.get("pipeline_running", False):
-    if st.button("Start Processing", type="primary", use_container_width=True):
+    if st.button(run_button_label, type="primary", use_container_width=True):
         st.session_state.pipeline_running = True
         st.session_state.pipeline_result = None
+        st.session_state.progress_queue = None
+        st.session_state.pipeline_thread = None
+        clear_session_snapshot(config.workspace)
 
         queue = Queue()
         st.session_state.progress_queue = queue
@@ -142,6 +148,9 @@ if st.session_state.get("pipeline_running", False):
                     result = msg[1]
                     st.session_state.pipeline_result = result
                     st.session_state.pipeline_running = False
+                    st.session_state.progress_queue = None
+                    st.session_state.pipeline_thread = None
+                    persist_session_snapshot(st.session_state, result=result, config=config)
                     progress_bar.progress(1.0)
 
                     if result.error:
@@ -161,6 +170,8 @@ if st.session_state.get("pipeline_running", False):
         if thread and not thread.is_alive():
             if st.session_state.get("pipeline_running"):
                 st.session_state.pipeline_running = False
+                st.session_state.progress_queue = None
+                st.session_state.pipeline_thread = None
                 if st.session_state.pipeline_result is None:
                     st.error("Pipeline thread ended unexpectedly")
                 st.rerun()

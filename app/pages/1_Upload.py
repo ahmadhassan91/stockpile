@@ -21,6 +21,7 @@ from components.parameter_sidebar import (
     render_parameter_sidebar,
     SIDEBAR_SETTING_KEYS,
 )
+from components.persisted_session import clear_session_snapshot, persist_session_snapshot
 from components.pipeline_presets import build_recommended_sidebar_overrides
 from components.reliability_status import classify_preflight_status, render_status_callout
 from components.session_init import init_session_state
@@ -90,6 +91,7 @@ def apply_dialog_settings():
         for key in SIDEBAR_SETTING_KEYS
         if key != "sidebar_admin_mode"
     )
+    persist_session_snapshot(st.session_state, config=st.session_state.get("pipeline_config"))
 
 
 def infer_material_from_filename(filename: str) -> str | None:
@@ -487,16 +489,26 @@ uploaded = st.file_uploader(
 
 if uploaded is not None:
     # Reset confirmation each time a new file is dropped
-    is_new_file = st.session_state.get("last_uploaded_name") != uploaded.name
+    upload_signature = f"{uploaded.name}:{uploaded.size}"
+    is_new_file = st.session_state.get("last_uploaded_signature") != upload_signature
     if is_new_file:
         st.session_state.settings_confirmed = False
         st.session_state.settings_dialog_dismissed = False
         st.session_state.confirmed_settings_signature = None
         st.session_state["ai_preflight_result"] = None
         st.session_state["ai_preflight_source"] = None
+        st.session_state["pipeline_result"] = None
+        st.session_state["pipeline_running"] = False
+        st.session_state["progress_queue"] = None
+        st.session_state["pipeline_thread"] = None
         st.session_state["last_uploaded_name"] = uploaded.name
+        st.session_state["last_uploaded_signature"] = upload_signature
         st.session_state["_upload_processed"] = False
         st.session_state["video_path"] = None
+        st.session_state["_video_info"] = None
+        st.session_state["_first_frame"] = None
+        st.session_state["_cone_detections"] = []
+        clear_session_snapshot()
         seed_settings_dialog_from_sidebar(force=True)
         apply_upload_material_hint(uploaded.name)
 
@@ -556,8 +568,28 @@ if uploaded is not None:
             st.session_state["_upload_processed"] = True
 
     info = st.session_state.get("_video_info")
+    if info is None and st.session_state.get("video_path"):
+        try:
+            info = get_video_info(st.session_state.video_path)
+            st.session_state["_video_info"] = info
+        except Exception:
+            info = None
+
     frame = st.session_state.get("_first_frame")
+    if frame is None and st.session_state.get("video_path"):
+        try:
+            frame = get_first_frame(st.session_state.video_path)
+            st.session_state["_first_frame"] = frame
+        except Exception:
+            frame = None
+
     detections = st.session_state.get("_cone_detections", [])
+    if frame is not None and not detections:
+        try:
+            detections = detect_cones(frame, st.session_state.pipeline_config.cone_detection)
+            st.session_state["_cone_detections"] = detections
+        except Exception:
+            detections = []
     material_for_recommendation = st.session_state.get("dialog_material_select") or st.session_state.get(
         "sidebar_material_select"
     )

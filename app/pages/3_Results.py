@@ -3,6 +3,7 @@
 import numpy as np
 import streamlit as st
 
+from stockpile.config import PipelineConfig
 from stockpile.visualization import build_3d_figure
 
 import sys
@@ -22,7 +23,7 @@ if result is None or result.error:
     st.stop()
 
 vol = result.volume
-config = st.session_state.get("pipeline_config")
+config = st.session_state.get("pipeline_config") or PipelineConfig()
 
 render_status_callout(classify_result_status(result))
 
@@ -195,14 +196,11 @@ col2.metric(
     "Weight",
     f"{result.weight_kg / 1000:.2f} tonnes",
 )
-if config:
-    col3.metric(
-        "Weight (kg)",
-        f"{result.weight_kg:,.0f} kg",
-        help=f"Density used: {config.material_density:.0f} kg/m³ ({config.material_name})",
-    )
-else:
-    col3.metric("Weight (kg)", f"{result.weight_kg:,.0f} kg")
+col3.metric(
+    "Weight (kg)",
+    f"{result.weight_kg:,.0f} kg",
+    help=f"Density used: {config.material_density:.0f} kg/m³ ({config.material_name})",
+)
 
 # All three volume methods side-by-side
 st.subheader("Volume Method Comparison")
