@@ -78,6 +78,14 @@ def _expand_polygon_radially(polygon_xy: np.ndarray, margin_m: float) -> np.ndar
     return expanded
 
 
+def _scale_polygon_about_centroid(polygon_xy: np.ndarray, scale_factor: float) -> np.ndarray:
+    """Scale a polygon around its centroid to hit a target area more predictably."""
+    if scale_factor <= 1.0:
+        return polygon_xy
+    centroid = polygon_xy.mean(axis=0)
+    return centroid + (polygon_xy - centroid) * scale_factor
+
+
 def _radial_percentile_polygon(
     points_xy: np.ndarray,
     center_xy: np.ndarray,
@@ -150,6 +158,7 @@ def _build_footprint_polygon(
     toe_sector_count: int,
     toe_radius_percentile: float,
     toe_min_sector_coverage: float,
+    min_toe_contour_area_ratio: float,
     min_toe_area_ratio: float,
     min_cone_area_ratio: float,
 ) -> tuple[np.ndarray | None, str | None, int, float | None]:
@@ -176,18 +185,36 @@ def _build_footprint_polygon(
         toe_candidate_points = int(np.count_nonzero(toe_mask))
         if toe_candidate_points >= toe_min_points:
             toe_points_xy = points_xy[toe_mask]
-            toe_polygon = _radial_percentile_polygon(
+            toe_contour_polygon = _radial_percentile_polygon(
                 toe_points_xy,
                 center_xy=footprint_center,
                 sector_count=toe_sector_count,
                 radius_percentile=toe_radius_percentile,
                 min_sector_coverage=toe_min_sector_coverage,
             )
-            toe_source = "toe_contour" if toe_polygon is not None else None
-            if toe_polygon is None:
-                toe_polygon = _convex_polygon(toe_points_xy)
+            toe_hull_polygon = _convex_polygon(toe_points_xy)
+            toe_hull_area = _polygon_area(toe_hull_polygon)
+            toe_contour_area = _polygon_area(toe_contour_polygon)
+
+            if (
+                toe_contour_polygon is not None
+                and toe_contour_area is not None
+                and toe_hull_area is not None
+                and toe_contour_area < toe_hull_area * min_toe_contour_area_ratio
+            ):
+                target_area = toe_hull_area * min_toe_contour_area_ratio
+                scale_factor = np.sqrt(target_area / max(toe_contour_area, 1e-6))
+                toe_polygon = _scale_polygon_about_centroid(toe_contour_polygon, scale_factor)
+                toe_source = "toe_contour_guarded"
+                toe_area = _polygon_area(toe_polygon)
+            elif toe_contour_polygon is not None:
+                toe_polygon = toe_contour_polygon
+                toe_source = "toe_contour"
+                toe_area = toe_contour_area
+            else:
+                toe_polygon = toe_hull_polygon
                 toe_source = "toe_hull" if toe_polygon is not None else None
-            toe_area = _polygon_area(toe_polygon)
+                toe_area = toe_hull_area
 
     cone_polygon = None
     cone_area = None
@@ -270,6 +297,7 @@ def volume_grid_integration(
     toe_footprint_sector_count: int = 48,
     toe_footprint_radius_percentile: float = 82.0,
     toe_footprint_min_sector_coverage: float = 0.55,
+    min_toe_contour_area_ratio: float = 0.78,
     min_toe_footprint_area_ratio: float = 0.55,
     min_cone_footprint_area_ratio: float = 0.7,
 ) -> GridIntegrationResult:
@@ -303,6 +331,7 @@ def volume_grid_integration(
         toe_footprint_sector_count,
         toe_footprint_radius_percentile,
         toe_footprint_min_sector_coverage,
+        min_toe_contour_area_ratio,
         min_toe_footprint_area_ratio,
         min_cone_footprint_area_ratio,
     )
@@ -469,6 +498,7 @@ def compute_volume(
         toe_footprint_sector_count=config.toe_footprint_sector_count,
         toe_footprint_radius_percentile=config.toe_footprint_radius_percentile,
         toe_footprint_min_sector_coverage=config.toe_footprint_min_sector_coverage,
+        min_toe_contour_area_ratio=config.min_toe_contour_area_ratio,
         min_toe_footprint_area_ratio=config.min_toe_footprint_area_ratio,
         min_cone_footprint_area_ratio=config.min_cone_footprint_area_ratio,
     )

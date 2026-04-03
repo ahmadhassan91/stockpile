@@ -164,8 +164,7 @@ def build_upload_setting_notes(video_info: dict | None, detections: list | None)
     if inferred_material:
         source_label = "filename" if inferred_material_source == "filename" else "AI preflight"
         notes.append(
-            f"Material was auto-suggested from the {source_label} as **{inferred_material}**. "
-            "Please confirm it matches the actual stockpile before continuing."
+            f"Material was auto-suggested from the {source_label} as **{inferred_material}**."
         )
     if ai_preflight and ai_preflight.retake_required and ai_preflight.retake_reason:
         warnings.append(
@@ -176,7 +175,7 @@ def build_upload_setting_notes(video_info: dict | None, detections: list | None)
         estimated_frames = max(1, int(video_info["duration"] / max(interval, 0.01)))
         used_frames = min(estimated_frames, max_frames)
         notes.append(
-            f"Estimated reconstruction coverage: about {used_frames} frame(s) at the current {interval:.2f}s interval."
+            f"Estimated reconstruction coverage: about {used_frames} frame(s)."
         )
         if estimated_frames > max_frames:
             warnings.append(
@@ -410,7 +409,7 @@ def settings_review_dialog(video_info: dict | None, detections: list | None):
 
     notes, warnings = build_upload_setting_notes(video_info, detections)
     if notes or warnings:
-        with st.expander("Why these settings were suggested", expanded=False):
+        with st.expander("Decision details", expanded=False):
             if notes:
                 st.markdown("\n".join(f"- {note}" for note in notes))
             if warnings:

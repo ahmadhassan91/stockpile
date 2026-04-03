@@ -82,6 +82,7 @@ class VolumeConfig:
     toe_footprint_sector_count: int = 48
     toe_footprint_radius_percentile: float = 82.0
     toe_footprint_min_sector_coverage: float = 0.55
+    min_toe_contour_area_ratio: float = 0.78
     min_toe_footprint_area_ratio: float = 0.55
     min_cone_footprint_area_ratio: float = 0.7
     recommended_min_grid_occupancy_pct: float = 3.0
