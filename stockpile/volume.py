@@ -86,14 +86,16 @@ def _scale_polygon_about_centroid(polygon_xy: np.ndarray, scale_factor: float) -
     return centroid + (polygon_xy - centroid) * scale_factor
 
 
-def _radial_percentile_polygon(
+def _radial_blended_polygon(
     points_xy: np.ndarray,
     center_xy: np.ndarray,
     sector_count: int,
-    radius_percentile: float,
+    inner_percentile: float,
+    outer_percentile: float,
+    blend_factor: float,
     min_sector_coverage: float,
 ) -> np.ndarray | None:
-    """Build a tighter star-shaped footprint from radial distance percentiles."""
+    """Build a middle-ground star-shaped footprint from radial toe bands."""
     if len(points_xy) < max(12, sector_count // 3):
         return None
 
@@ -126,7 +128,9 @@ def _radial_percentile_polygon(
 
         populated += 1
         sector_theta = 0.5 * (start + end)
-        sector_radius = float(np.percentile(radii[mask], radius_percentile))
+        inner_radius = float(np.percentile(radii[mask], inner_percentile))
+        outer_radius = float(np.percentile(radii[mask], outer_percentile))
+        sector_radius = inner_radius + max(0.0, min(1.0, blend_factor)) * max(0.0, outer_radius - inner_radius)
         vertices.append(
             center_xy
             + np.array([np.cos(sector_theta), np.sin(sector_theta)]) * sector_radius
@@ -157,6 +161,8 @@ def _build_footprint_polygon(
     toe_min_points: int,
     toe_sector_count: int,
     toe_radius_percentile: float,
+    toe_outer_percentile: float,
+    toe_blend_factor: float,
     toe_min_sector_coverage: float,
     min_toe_contour_area_ratio: float,
     min_toe_area_ratio: float,
@@ -185,11 +191,13 @@ def _build_footprint_polygon(
         toe_candidate_points = int(np.count_nonzero(toe_mask))
         if toe_candidate_points >= toe_min_points:
             toe_points_xy = points_xy[toe_mask]
-            toe_contour_polygon = _radial_percentile_polygon(
+            toe_contour_polygon = _radial_blended_polygon(
                 toe_points_xy,
                 center_xy=footprint_center,
                 sector_count=toe_sector_count,
-                radius_percentile=toe_radius_percentile,
+                inner_percentile=toe_radius_percentile,
+                outer_percentile=toe_outer_percentile,
+                blend_factor=toe_blend_factor,
                 min_sector_coverage=toe_min_sector_coverage,
             )
             toe_hull_polygon = _convex_polygon(toe_points_xy)
@@ -205,11 +213,11 @@ def _build_footprint_polygon(
                 target_area = toe_hull_area * min_toe_contour_area_ratio
                 scale_factor = np.sqrt(target_area / max(toe_contour_area, 1e-6))
                 toe_polygon = _scale_polygon_about_centroid(toe_contour_polygon, scale_factor)
-                toe_source = "toe_contour_guarded"
+                toe_source = "toe_hybrid_guarded"
                 toe_area = _polygon_area(toe_polygon)
             elif toe_contour_polygon is not None:
                 toe_polygon = toe_contour_polygon
-                toe_source = "toe_contour"
+                toe_source = "toe_hybrid"
                 toe_area = toe_contour_area
             else:
                 toe_polygon = toe_hull_polygon
@@ -296,6 +304,8 @@ def volume_grid_integration(
     toe_footprint_min_points: int = 250,
     toe_footprint_sector_count: int = 48,
     toe_footprint_radius_percentile: float = 82.0,
+    toe_footprint_outer_percentile: float = 97.0,
+    toe_footprint_blend_factor: float = 0.40,
     toe_footprint_min_sector_coverage: float = 0.55,
     min_toe_contour_area_ratio: float = 0.78,
     min_toe_footprint_area_ratio: float = 0.55,
@@ -330,6 +340,8 @@ def volume_grid_integration(
         toe_footprint_min_points,
         toe_footprint_sector_count,
         toe_footprint_radius_percentile,
+        toe_footprint_outer_percentile,
+        toe_footprint_blend_factor,
         toe_footprint_min_sector_coverage,
         min_toe_contour_area_ratio,
         min_toe_footprint_area_ratio,
@@ -497,6 +509,8 @@ def compute_volume(
         toe_footprint_min_points=config.toe_footprint_min_points,
         toe_footprint_sector_count=config.toe_footprint_sector_count,
         toe_footprint_radius_percentile=config.toe_footprint_radius_percentile,
+        toe_footprint_outer_percentile=config.toe_footprint_outer_percentile,
+        toe_footprint_blend_factor=config.toe_footprint_blend_factor,
         toe_footprint_min_sector_coverage=config.toe_footprint_min_sector_coverage,
         min_toe_contour_area_ratio=config.min_toe_contour_area_ratio,
         min_toe_footprint_area_ratio=config.min_toe_footprint_area_ratio,

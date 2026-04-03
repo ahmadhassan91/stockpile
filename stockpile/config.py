@@ -81,6 +81,8 @@ class VolumeConfig:
     toe_footprint_min_points: int = 250
     toe_footprint_sector_count: int = 48
     toe_footprint_radius_percentile: float = 82.0
+    toe_footprint_outer_percentile: float = 97.0
+    toe_footprint_blend_factor: float = 0.40
     toe_footprint_min_sector_coverage: float = 0.55
     min_toe_contour_area_ratio: float = 0.78
     min_toe_footprint_area_ratio: float = 0.55
