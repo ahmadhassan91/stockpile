@@ -223,6 +223,11 @@ with c1:
     )
     if vol.footprint_area_m2 is not None:
         st.caption(f"Footprint area: {vol.footprint_area_m2:.1f} m² via {vol.footprint_source.replace('_', ' ')}")
+    if vol.toe_candidate_points:
+        st.caption(
+            f"Toe-aware footprint used {vol.toe_candidate_points:,} low-height points"
+            + (f" below {vol.toe_height_upper_m:.2f} m" if vol.toe_height_upper_m is not None else "")
+        )
 
 with c2:
     st.metric(

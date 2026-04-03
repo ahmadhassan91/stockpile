@@ -75,6 +75,11 @@ class VolumeConfig:
     grid_resolution: float = 0.05  # meters per cell for 2.5D method
     alpha: float = 0.3  # alpha shape parameter
     footprint_buffer_m: float = 0.75
+    toe_footprint_buffer_m: float = 0.25
+    toe_footprint_height_fraction: float = 0.18
+    toe_footprint_max_height_m: float = 0.35
+    toe_footprint_min_points: int = 250
+    min_toe_footprint_area_ratio: float = 0.55
     min_cone_footprint_area_ratio: float = 0.7
     recommended_min_grid_occupancy_pct: float = 3.0
     recommended_max_grid_to_hull_ratio: float = 4.0

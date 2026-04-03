@@ -126,6 +126,28 @@ def apply_upload_material_hint(filename: str, ai_preflight=None):
 
 def build_upload_setting_notes(video_info: dict | None, detections: list | None):
     """Generate practical notes from the uploaded video and current dialog values."""
+    def note_category(text: str) -> str:
+        lower = text.lower()
+        if "material was auto-suggested" in lower:
+            return "material"
+        if "processing profile" in lower or "preset biases" in lower or "auto-selected" in lower:
+            return "profile"
+        if "cone visibility score" in lower:
+            return "cone_score"
+        if "cone" in lower and ("visible" in lower or "detected" in lower):
+            return "cone_visibility"
+        if "surface" in lower or "texture" in lower:
+            return "surface"
+        if "frame interval" in lower or "processing will use about" in lower:
+            return "frame_budget"
+        if "resolution" in lower:
+            return "resolution"
+        if "manual scale" in lower:
+            return "manual_scale"
+        if "retake" in lower:
+            return "retake"
+        return lower
+
     notes = [
         "We can read the video duration, resolution, and whether cones are visible, "
         "but material, cone size, and camera height still require user confirmation."
@@ -152,7 +174,6 @@ def build_upload_setting_notes(video_info: dict | None, detections: list | None)
         notes.append(
             f"Processing profile **{profile_label}** was auto-selected from the upload quality signals."
         )
-        notes.extend(profile_notes[:2])
     if ai_preflight:
         notes.append(
             f"AI preflight ({ai_preflight.provider} {ai_preflight.model}) cone visibility score: "
@@ -206,15 +227,17 @@ def build_upload_setting_notes(video_info: dict | None, detections: list | None)
     deduped_notes: list[str] = []
     for note in notes:
         note = note.strip()
-        if note and note not in seen:
-            seen.add(note)
+        category = note_category(note)
+        if note and category not in seen:
+            seen.add(category)
             deduped_notes.append(note)
 
     deduped_warnings: list[str] = []
     for warning in warnings:
         warning = warning.strip()
-        if warning and warning not in seen:
-            seen.add(warning)
+        category = note_category(warning)
+        if warning and category not in seen:
+            seen.add(category)
             deduped_warnings.append(warning)
 
     return deduped_notes, deduped_warnings

@@ -29,6 +29,8 @@ class VolumeResult:
     grid_to_hull_ratio: float | None
     footprint_area_m2: float | None
     footprint_source: str | None
+    toe_candidate_points: int = 0
+    toe_height_upper_m: float | None = None
 
 
 @dataclass
@@ -40,6 +42,8 @@ class GridIntegrationResult:
     interpolated: bool
     footprint_area_m2: float | None
     footprint_source: str | None
+    toe_candidate_points: int = 0
+    toe_height_upper_m: float | None = None
 
 
 def _convex_polygon(points_xy: np.ndarray) -> np.ndarray | None:
@@ -85,12 +89,36 @@ def _polygon_area(polygon_xy: np.ndarray | None) -> float | None:
 
 
 def _build_footprint_polygon(
-    points_xy: np.ndarray,
+    points_xyz: np.ndarray,
     footprint_xy: np.ndarray | None,
     buffer_m: float,
+    toe_buffer_m: float,
+    toe_height_fraction: float,
+    toe_max_height_m: float,
+    toe_min_points: int,
+    min_toe_area_ratio: float,
     min_cone_area_ratio: float,
-) -> tuple[np.ndarray | None, str | None]:
+) -> tuple[np.ndarray | None, str | None, int, float | None]:
     """Choose a footprint polygon from cones when available, otherwise observed pile points."""
+    points_xy = points_xyz[:, :2]
+
+    toe_polygon = None
+    toe_area = None
+    toe_candidate_points = 0
+    toe_height_upper = None
+    z = points_xyz[:, 2]
+    if len(points_xyz) >= toe_min_points:
+        pile_height_p95 = float(np.percentile(z, 95))
+        toe_height_upper = max(
+            0.12,
+            min(toe_max_height_m, pile_height_p95 * toe_height_fraction),
+        )
+        toe_mask = z <= toe_height_upper
+        toe_candidate_points = int(np.count_nonzero(toe_mask))
+        if toe_candidate_points >= toe_min_points:
+            toe_polygon = _convex_polygon(points_xy[toe_mask])
+            toe_area = _polygon_area(toe_polygon)
+
     cone_polygon = None
     cone_area = None
     if footprint_xy is not None and len(footprint_xy) >= 3:
@@ -100,9 +128,20 @@ def _build_footprint_polygon(
     observed_polygon = _convex_polygon(points_xy)
     observed_area = _polygon_area(observed_polygon)
 
+    if toe_polygon is not None and observed_polygon is not None and toe_area and observed_area:
+        if toe_area >= observed_area * min_toe_area_ratio:
+            return _expand_polygon_radially(toe_polygon, toe_buffer_m), "toe_hull", toe_candidate_points, toe_height_upper
+        logger.info(
+            "Toe footprint area %.2f m² is smaller than %.0f%% of observed hull area %.2f m²; "
+            "using a broader footprint instead.",
+            toe_area,
+            min_toe_area_ratio * 100,
+            observed_area,
+        )
+
     if cone_polygon is not None and observed_polygon is not None and cone_area and observed_area:
         if cone_area >= observed_area * min_cone_area_ratio:
-            return _expand_polygon_radially(cone_polygon, buffer_m), "cone_hull"
+            return _expand_polygon_radially(cone_polygon, buffer_m), "cone_hull", toe_candidate_points, toe_height_upper
         logger.info(
             "Cone footprint area %.2f m² is smaller than %.0f%% of observed hull area %.2f m²; "
             "using observed hull footprint instead.",
@@ -110,15 +149,17 @@ def _build_footprint_polygon(
             min_cone_area_ratio * 100,
             observed_area,
         )
-        return _expand_polygon_radially(observed_polygon, buffer_m), "observed_hull_fallback"
+        return _expand_polygon_radially(observed_polygon, buffer_m), "observed_hull_fallback", toe_candidate_points, toe_height_upper
 
+    if toe_polygon is not None:
+        return _expand_polygon_radially(toe_polygon, toe_buffer_m), "toe_hull", toe_candidate_points, toe_height_upper
     if cone_polygon is not None:
-        return _expand_polygon_radially(cone_polygon, buffer_m), "cone_hull"
+        return _expand_polygon_radially(cone_polygon, buffer_m), "cone_hull", toe_candidate_points, toe_height_upper
 
     if observed_polygon is not None:
-        return _expand_polygon_radially(observed_polygon, buffer_m), "observed_hull"
+        return _expand_polygon_radially(observed_polygon, buffer_m), "observed_hull", toe_candidate_points, toe_height_upper
 
-    return None, None
+    return None, None, toe_candidate_points, toe_height_upper
 
 
 def volume_convex_hull(points: np.ndarray) -> float:
@@ -154,6 +195,11 @@ def volume_grid_integration(
     resolution: float = 0.05,
     footprint_xy: np.ndarray | None = None,
     footprint_buffer_m: float = 0.75,
+    toe_footprint_buffer_m: float = 0.25,
+    toe_footprint_height_fraction: float = 0.18,
+    toe_footprint_max_height_m: float = 0.35,
+    toe_footprint_min_points: int = 250,
+    min_toe_footprint_area_ratio: float = 0.55,
     min_cone_footprint_area_ratio: float = 0.7,
 ) -> GridIntegrationResult:
     """2.5D grid integration: project onto XY grid, sum cell_area × max_height.
@@ -169,14 +215,21 @@ def volume_grid_integration(
             interpolated=False,
             footprint_area_m2=None,
             footprint_source=None,
+            toe_candidate_points=0,
+            toe_height_upper_m=None,
         )
 
     x, y, z = points[:, 0], points[:, 1], points[:, 2]
     points_xy = np.column_stack([x, y])
-    footprint_polygon, footprint_source = _build_footprint_polygon(
-        points_xy,
+    footprint_polygon, footprint_source, toe_candidate_points, toe_height_upper = _build_footprint_polygon(
+        points,
         footprint_xy,
         footprint_buffer_m,
+        toe_footprint_buffer_m,
+        toe_footprint_height_fraction,
+        toe_footprint_max_height_m,
+        toe_footprint_min_points,
+        min_toe_footprint_area_ratio,
         min_cone_footprint_area_ratio,
     )
 
@@ -199,6 +252,8 @@ def volume_grid_integration(
             interpolated=False,
             footprint_area_m2=None,
             footprint_source=footprint_source,
+            toe_candidate_points=toe_candidate_points,
+            toe_height_upper_m=toe_height_upper,
         )
 
     # Digitize points into grid cells
@@ -270,13 +325,14 @@ def volume_grid_integration(
     volume = float(np.sum(height_grid_filled[inside_footprint]) * cell_area)
 
     logger.info(
-        "Grid integration: %.2f m³ (grid %dx%d, %.1f%% footprint cells had data%s, footprint=%s)",
+        "Grid integration: %.2f m³ (grid %dx%d, %.1f%% footprint cells had data%s, footprint=%s, toe candidates=%d)",
         volume,
         height_grid.shape[0],
         height_grid.shape[1],
         occupancy_pct,
         ", interpolated" if used_interpolation else "",
         footprint_source or "bounding_box",
+        toe_candidate_points,
     )
 
     return GridIntegrationResult(
@@ -287,6 +343,8 @@ def volume_grid_integration(
         interpolated=used_interpolation,
         footprint_area_m2=footprint_area_m2,
         footprint_source=footprint_source,
+        toe_candidate_points=toe_candidate_points,
+        toe_height_upper_m=toe_height_upper,
     )
 
 
@@ -330,6 +388,11 @@ def compute_volume(
         config.grid_resolution,
         footprint_xy=footprint_xy,
         footprint_buffer_m=config.footprint_buffer_m,
+        toe_footprint_buffer_m=config.toe_footprint_buffer_m,
+        toe_footprint_height_fraction=config.toe_footprint_height_fraction,
+        toe_footprint_max_height_m=config.toe_footprint_max_height_m,
+        toe_footprint_min_points=config.toe_footprint_min_points,
+        min_toe_footprint_area_ratio=config.min_toe_footprint_area_ratio,
         min_cone_footprint_area_ratio=config.min_cone_footprint_area_ratio,
     )
     grid_vol = grid_stats.volume_m3
@@ -385,4 +448,6 @@ def compute_volume(
         grid_to_hull_ratio=grid_to_hull_ratio,
         footprint_area_m2=grid_stats.footprint_area_m2,
         footprint_source=grid_stats.footprint_source,
+        toe_candidate_points=getattr(grid_stats, "toe_candidate_points", 0),
+        toe_height_upper_m=getattr(grid_stats, "toe_height_upper_m", None),
     )

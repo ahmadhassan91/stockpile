@@ -185,6 +185,12 @@ if result:
                 f"**Footprint**: {result.volume.footprint_area_m2:.2f} m² "
                 f"({result.volume.footprint_source})"
             )
+        if getattr(result.volume, "toe_candidate_points", 0):
+            toe_label = f"{result.volume.toe_height_upper_m:.2f} m" if result.volume.toe_height_upper_m is not None else "n/a"
+            st.write(
+                f"**Toe candidates**: {result.volume.toe_candidate_points:,} "
+                f"(upper toe band {toe_label})"
+            )
         st.write(f"**Recommended volume method**: {result.volume.recommended_method}")
 
     if result.quality_blockers:
