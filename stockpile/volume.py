@@ -207,17 +207,21 @@ def _build_footprint_polygon(
             if (
                 toe_contour_polygon is not None
                 and toe_contour_area is not None
+                and toe_hull_polygon is not None
                 and toe_hull_area is not None
-                and toe_contour_area < toe_hull_area * min_toe_contour_area_ratio
             ):
-                target_area = toe_hull_area * min_toe_contour_area_ratio
-                scale_factor = np.sqrt(target_area / max(toe_contour_area, 1e-6))
-                toe_polygon = _scale_polygon_about_centroid(toe_contour_polygon, scale_factor)
-                toe_source = "toe_hybrid_guarded"
+                min_target_area = toe_hull_area * min_toe_contour_area_ratio
+                blended_target_area = toe_contour_area + max(0.0, min(1.0, toe_blend_factor)) * max(
+                    0.0, toe_hull_area - toe_contour_area
+                )
+                target_area = max(min_target_area, blended_target_area)
+                scale_factor = np.sqrt(target_area / max(toe_hull_area, 1e-6))
+                toe_polygon = _scale_polygon_about_centroid(toe_hull_polygon, scale_factor)
+                toe_source = "toe_hybrid_guarded" if target_area <= min_target_area + 1e-6 else "toe_hybrid"
                 toe_area = _polygon_area(toe_polygon)
             elif toe_contour_polygon is not None:
                 toe_polygon = toe_contour_polygon
-                toe_source = "toe_hybrid"
+                toe_source = "toe_contour_only"
                 toe_area = toe_contour_area
             else:
                 toe_polygon = toe_hull_polygon
