@@ -148,10 +148,7 @@ def build_upload_setting_notes(video_info: dict | None, detections: list | None)
             return "retake"
         return lower
 
-    notes = [
-        "We can read the video duration, resolution, and whether cones are visible, "
-        "but material, cone size, and camera height still require user confirmation."
-    ]
+    notes = []
     warnings = []
 
     interval = float(st.session_state.get("dialog_frame_interval", 0.25))
@@ -170,27 +167,16 @@ def build_upload_setting_notes(video_info: dict | None, detections: list | None)
             f"Material was auto-suggested from the {source_label} as **{inferred_material}**. "
             "Please confirm it matches the actual stockpile before continuing."
         )
-    if profile_label:
-        notes.append(
-            f"Processing profile **{profile_label}** was auto-selected from the upload quality signals."
+    if ai_preflight and ai_preflight.retake_required and ai_preflight.retake_reason:
+        warnings.append(
+            f"AI preflight suggests retaking the clip: {ai_preflight.retake_reason}"
         )
-    if ai_preflight:
-        notes.append(
-            f"AI preflight ({ai_preflight.provider} {ai_preflight.model}) cone visibility score: "
-            f"{ai_preflight.cone_visibility_score:.0%}."
-        )
-        notes.extend(ai_preflight.notes[:2])
-        if ai_preflight.retake_required and ai_preflight.retake_reason:
-            warnings.append(
-                f"AI preflight suggests retaking the clip: {ai_preflight.retake_reason}"
-            )
 
     if video_info:
         estimated_frames = max(1, int(video_info["duration"] / max(interval, 0.01)))
         used_frames = min(estimated_frames, max_frames)
         notes.append(
-            f"At the current {interval:.2f}s frame interval, processing will use about "
-            f"{used_frames} frame(s)."
+            f"Estimated reconstruction coverage: about {used_frames} frame(s) at the current {interval:.2f}s interval."
         )
         if estimated_frames > max_frames:
             warnings.append(
@@ -205,7 +191,12 @@ def build_upload_setting_notes(video_info: dict | None, detections: list | None)
             warnings.append(
                 "The uploaded resolution is relatively low, so reconstruction detail may be limited."
             )
-        elif video_info["width"] >= 1920 and video_info["height"] >= 1080 and quality != "high":
+        elif (
+            st.session_state.get("sidebar_admin_mode")
+            and video_info["width"] >= 1920
+            and video_info["height"] >= 1080
+            and quality != "high"
+        ):
             notes.append(
                 "This is a high-resolution clip. You can switch COLMAP quality to High for a slower but denser reconstruction."
             )
@@ -214,10 +205,6 @@ def build_upload_setting_notes(video_info: dict | None, detections: list | None)
         if len(detections) == 0:
             warnings.append(
                 "No red cones were detected in the first frame. Auto scale may fail unless cones become clearer later in the video."
-            )
-        else:
-            notes.append(
-                f"Detected {len(detections)} cone(s) in the first frame, so cone-based auto scale should be available."
             )
 
     if manual_scale_enabled:
@@ -240,7 +227,7 @@ def build_upload_setting_notes(video_info: dict | None, detections: list | None)
             seen.add(category)
             deduped_warnings.append(warning)
 
-    return deduped_notes, deduped_warnings
+    return deduped_notes[:3], deduped_warnings[:2]
 
 
 def apply_recommended_dialog_preset(material: str, video_info: dict | None, detections: list | None):
@@ -348,7 +335,7 @@ def settings_review_dialog(video_info: dict | None, detections: list | None):
 
     st.markdown("**Auto-selected processing profile**")
     st.info(f"**{profile_label}**")
-    if profile_notes:
+    if st.session_state.get("sidebar_admin_mode") and profile_notes:
         st.caption("  \n".join(f"- {note}" for note in profile_notes))
 
     preflight_status = classify_preflight_status(ai_preflight, detections, profile_label)
@@ -364,8 +351,7 @@ def settings_review_dialog(video_info: dict | None, detections: list | None):
             )
         else:
             st.caption(
-                f"AI preflight ({ai_preflight.provider} {ai_preflight.model}) is available "
-                "and is being used only for setup guidance, not for the final measurement."
+                "AI setup guidance is active for this upload. Final measurement still comes from the reconstruction pipeline."
             )
 
     if st.session_state.get("sidebar_admin_mode"):
@@ -423,10 +409,13 @@ def settings_review_dialog(video_info: dict | None, detections: list | None):
         )
 
     notes, warnings = build_upload_setting_notes(video_info, detections)
-    if notes:
-        st.info("\n".join(f"- {note}" for note in notes))
-    if warnings:
-        st.warning("\n".join(f"- {warning}" for warning in warnings))
+    if notes or warnings:
+        with st.expander("Why these settings were suggested", expanded=False):
+            if notes:
+                st.markdown("\n".join(f"- {note}" for note in notes))
+            if warnings:
+                st.markdown("**Things to watch**")
+                st.markdown("\n".join(f"- {warning}" for warning in warnings))
 
     st.divider()
     col_confirm, col_cancel = st.columns([2, 1])

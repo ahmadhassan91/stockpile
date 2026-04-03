@@ -157,15 +157,15 @@ def render_parameter_sidebar() -> PipelineConfig:
     ai_preflight = st.session_state.get("ai_preflight_result")
     if recommended_profile:
         st.sidebar.success(f"Auto processing profile: {recommended_profile}")
-        if recommended_notes:
+        if admin_mode and recommended_notes:
             st.sidebar.caption(recommended_notes[0])
-    if ai_preflight is not None:
+    if ai_preflight is not None and ai_preflight.retake_required:
+        st.sidebar.warning(f"AI retake suggestion: {ai_preflight.retake_reason}")
+    elif admin_mode and ai_preflight is not None:
         st.sidebar.caption(
             f"AI preflight: cone visibility {ai_preflight.cone_visibility_score:.0%} "
             f"via {ai_preflight.provider} {ai_preflight.model}"
         )
-        if ai_preflight.retake_required:
-            st.sidebar.warning(f"AI retake suggestion: {ai_preflight.retake_reason}")
 
     if not admin_mode:
         st.sidebar.info(

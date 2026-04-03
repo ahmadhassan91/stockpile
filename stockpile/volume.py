@@ -78,6 +78,57 @@ def _expand_polygon_radially(polygon_xy: np.ndarray, margin_m: float) -> np.ndar
     return expanded
 
 
+def _radial_percentile_polygon(
+    points_xy: np.ndarray,
+    center_xy: np.ndarray,
+    sector_count: int,
+    radius_percentile: float,
+    min_sector_coverage: float,
+) -> np.ndarray | None:
+    """Build a tighter star-shaped footprint from radial distance percentiles."""
+    if len(points_xy) < max(12, sector_count // 3):
+        return None
+
+    unique_xy = np.unique(np.round(points_xy, decimals=6), axis=0)
+    if len(unique_xy) < max(12, sector_count // 3):
+        return None
+
+    rel = unique_xy - center_xy
+    radii = np.linalg.norm(rel, axis=1)
+    valid = radii > 1e-6
+    if np.count_nonzero(valid) < max(12, sector_count // 3):
+        return None
+
+    rel = rel[valid]
+    radii = radii[valid]
+    angles = (np.arctan2(rel[:, 1], rel[:, 0]) + 2 * np.pi) % (2 * np.pi)
+    sector_edges = np.linspace(0.0, 2 * np.pi, sector_count + 1)
+
+    vertices: list[np.ndarray] = []
+    populated = 0
+    for sector_idx in range(sector_count):
+        start = sector_edges[sector_idx]
+        end = sector_edges[sector_idx + 1]
+        if sector_idx == sector_count - 1:
+            mask = (angles >= start) & (angles <= end)
+        else:
+            mask = (angles >= start) & (angles < end)
+        if not np.any(mask):
+            continue
+
+        populated += 1
+        sector_theta = 0.5 * (start + end)
+        sector_radius = float(np.percentile(radii[mask], radius_percentile))
+        vertices.append(
+            center_xy
+            + np.array([np.cos(sector_theta), np.sin(sector_theta)]) * sector_radius
+        )
+
+    if populated / sector_count < min_sector_coverage or len(vertices) < 8:
+        return None
+    return np.asarray(vertices)
+
+
 def _polygon_area(polygon_xy: np.ndarray | None) -> float | None:
     """Compute polygon area from a convex vertex list."""
     if polygon_xy is None or len(polygon_xy) < 3:
@@ -96,6 +147,9 @@ def _build_footprint_polygon(
     toe_height_fraction: float,
     toe_max_height_m: float,
     toe_min_points: int,
+    toe_sector_count: int,
+    toe_radius_percentile: float,
+    toe_min_sector_coverage: float,
     min_toe_area_ratio: float,
     min_cone_area_ratio: float,
 ) -> tuple[np.ndarray | None, str | None, int, float | None]:
@@ -103,10 +157,15 @@ def _build_footprint_polygon(
     points_xy = points_xyz[:, :2]
 
     toe_polygon = None
+    toe_source = None
     toe_area = None
     toe_candidate_points = 0
     toe_height_upper = None
     z = points_xyz[:, 2]
+    observed_polygon = _convex_polygon(points_xy)
+    observed_area = _polygon_area(observed_polygon)
+    footprint_center = observed_polygon.mean(axis=0) if observed_polygon is not None else points_xy.mean(axis=0)
+
     if len(points_xyz) >= toe_min_points:
         pile_height_p95 = float(np.percentile(z, 95))
         toe_height_upper = max(
@@ -116,7 +175,18 @@ def _build_footprint_polygon(
         toe_mask = z <= toe_height_upper
         toe_candidate_points = int(np.count_nonzero(toe_mask))
         if toe_candidate_points >= toe_min_points:
-            toe_polygon = _convex_polygon(points_xy[toe_mask])
+            toe_points_xy = points_xy[toe_mask]
+            toe_polygon = _radial_percentile_polygon(
+                toe_points_xy,
+                center_xy=footprint_center,
+                sector_count=toe_sector_count,
+                radius_percentile=toe_radius_percentile,
+                min_sector_coverage=toe_min_sector_coverage,
+            )
+            toe_source = "toe_contour" if toe_polygon is not None else None
+            if toe_polygon is None:
+                toe_polygon = _convex_polygon(toe_points_xy)
+                toe_source = "toe_hull" if toe_polygon is not None else None
             toe_area = _polygon_area(toe_polygon)
 
     cone_polygon = None
@@ -125,16 +195,14 @@ def _build_footprint_polygon(
         cone_polygon = _convex_polygon(np.asarray(footprint_xy))
         cone_area = _polygon_area(cone_polygon)
 
-    observed_polygon = _convex_polygon(points_xy)
-    observed_area = _polygon_area(observed_polygon)
-
     if toe_polygon is not None and observed_polygon is not None and toe_area and observed_area:
         if toe_area >= observed_area * min_toe_area_ratio:
-            return _expand_polygon_radially(toe_polygon, toe_buffer_m), "toe_hull", toe_candidate_points, toe_height_upper
+            return _expand_polygon_radially(toe_polygon, toe_buffer_m), toe_source or "toe_hull", toe_candidate_points, toe_height_upper
         logger.info(
-            "Toe footprint area %.2f m² is smaller than %.0f%% of observed hull area %.2f m²; "
+            "Toe footprint area %.2f m² (%s) is smaller than %.0f%% of observed hull area %.2f m²; "
             "using a broader footprint instead.",
             toe_area,
+            toe_source or "toe_hull",
             min_toe_area_ratio * 100,
             observed_area,
         )
@@ -152,7 +220,7 @@ def _build_footprint_polygon(
         return _expand_polygon_radially(observed_polygon, buffer_m), "observed_hull_fallback", toe_candidate_points, toe_height_upper
 
     if toe_polygon is not None:
-        return _expand_polygon_radially(toe_polygon, toe_buffer_m), "toe_hull", toe_candidate_points, toe_height_upper
+        return _expand_polygon_radially(toe_polygon, toe_buffer_m), toe_source or "toe_hull", toe_candidate_points, toe_height_upper
     if cone_polygon is not None:
         return _expand_polygon_radially(cone_polygon, buffer_m), "cone_hull", toe_candidate_points, toe_height_upper
 
@@ -199,6 +267,9 @@ def volume_grid_integration(
     toe_footprint_height_fraction: float = 0.18,
     toe_footprint_max_height_m: float = 0.35,
     toe_footprint_min_points: int = 250,
+    toe_footprint_sector_count: int = 48,
+    toe_footprint_radius_percentile: float = 82.0,
+    toe_footprint_min_sector_coverage: float = 0.55,
     min_toe_footprint_area_ratio: float = 0.55,
     min_cone_footprint_area_ratio: float = 0.7,
 ) -> GridIntegrationResult:
@@ -229,6 +300,9 @@ def volume_grid_integration(
         toe_footprint_height_fraction,
         toe_footprint_max_height_m,
         toe_footprint_min_points,
+        toe_footprint_sector_count,
+        toe_footprint_radius_percentile,
+        toe_footprint_min_sector_coverage,
         min_toe_footprint_area_ratio,
         min_cone_footprint_area_ratio,
     )
@@ -279,7 +353,7 @@ def volume_grid_integration(
         cx, cy = np.meshgrid(x_centers, y_centers, indexing="ij")
         cell_centers = np.column_stack([cx.ravel(), cy.ravel()])
         footprint_path = MplPath(footprint_polygon)
-        inside_footprint = footprint_path.contains_points(cell_centers, radius=resolution)
+        inside_footprint = footprint_path.contains_points(cell_centers, radius=resolution * 0.5)
         inside_footprint = inside_footprint.reshape(height_grid.shape)
         footprint_area_m2 = float(ConvexHull(footprint_polygon).volume)
     else:
@@ -392,6 +466,9 @@ def compute_volume(
         toe_footprint_height_fraction=config.toe_footprint_height_fraction,
         toe_footprint_max_height_m=config.toe_footprint_max_height_m,
         toe_footprint_min_points=config.toe_footprint_min_points,
+        toe_footprint_sector_count=config.toe_footprint_sector_count,
+        toe_footprint_radius_percentile=config.toe_footprint_radius_percentile,
+        toe_footprint_min_sector_coverage=config.toe_footprint_min_sector_coverage,
         min_toe_footprint_area_ratio=config.min_toe_footprint_area_ratio,
         min_cone_footprint_area_ratio=config.min_cone_footprint_area_ratio,
     )
