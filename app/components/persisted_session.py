@@ -326,6 +326,7 @@ def persist_session_snapshot(
     with gzip.open(snapshot_path, "wb") as handle:
         pickle.dump(snapshot, handle, protocol=pickle.HIGHEST_PROTOCOL)
 
+    logger.info("Persisted session snapshot to %s", snapshot_path)
     return snapshot_path
 
 
@@ -353,6 +354,7 @@ def restore_session_snapshot(session_state: Any, workspace: str | Path | None = 
     session_state["pipeline_running"] = False
     session_state["progress_queue"] = None
     session_state["pipeline_thread"] = None
+    logger.info("Restored session snapshot from %s", snapshot_path)
     return True
 
 

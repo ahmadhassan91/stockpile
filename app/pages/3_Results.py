@@ -3,6 +3,7 @@
 import numpy as np
 import streamlit as st
 
+from components.persisted_session import persist_session_snapshot
 from stockpile.config import PipelineConfig
 from stockpile.visualization import build_3d_figure
 
@@ -24,6 +25,10 @@ if result is None or result.error:
 
 vol = result.volume
 config = st.session_state.get("pipeline_config") or PipelineConfig()
+
+# Keep the latest completed run recoverable even if the Streamlit session resets
+# after the user lands on the Results page.
+persist_session_snapshot(st.session_state, result=result, config=config)
 
 render_status_callout(classify_result_status(result))
 
