@@ -231,6 +231,35 @@ def build_upload_setting_notes(video_info: dict | None, detections: list | None)
     return deduped_notes[:3], deduped_warnings[:2]
 
 
+def load_video_context():
+    """Restore cached upload context when the file uploader widget resets."""
+    info = st.session_state.get("_video_info")
+    if info is None and st.session_state.get("video_path"):
+        try:
+            info = get_video_info(st.session_state.video_path)
+            st.session_state["_video_info"] = info
+        except Exception:
+            info = None
+
+    frame = st.session_state.get("_first_frame")
+    if frame is None and st.session_state.get("video_path"):
+        try:
+            frame = get_first_frame(st.session_state.video_path)
+            st.session_state["_first_frame"] = frame
+        except Exception:
+            frame = None
+
+    detections = st.session_state.get("_cone_detections", [])
+    if frame is not None and not detections:
+        try:
+            detections = detect_cones(frame, st.session_state.pipeline_config.cone_detection)
+            st.session_state["_cone_detections"] = detections
+        except Exception:
+            detections = []
+
+    return info, frame, detections
+
+
 def apply_recommended_dialog_preset(material: str, video_info: dict | None, detections: list | None):
     """Apply smart preset overrides into the dialog state before widgets render."""
     ai_preflight = st.session_state.get("ai_preflight_result")
@@ -567,29 +596,7 @@ if uploaded is not None:
             status.update(label="Video ready!", state="complete", expanded=False)
             st.session_state["_upload_processed"] = True
 
-    info = st.session_state.get("_video_info")
-    if info is None and st.session_state.get("video_path"):
-        try:
-            info = get_video_info(st.session_state.video_path)
-            st.session_state["_video_info"] = info
-        except Exception:
-            info = None
-
-    frame = st.session_state.get("_first_frame")
-    if frame is None and st.session_state.get("video_path"):
-        try:
-            frame = get_first_frame(st.session_state.video_path)
-            st.session_state["_first_frame"] = frame
-        except Exception:
-            frame = None
-
-    detections = st.session_state.get("_cone_detections", [])
-    if frame is not None and not detections:
-        try:
-            detections = detect_cones(frame, st.session_state.pipeline_config.cone_detection)
-            st.session_state["_cone_detections"] = detections
-        except Exception:
-            detections = []
+    info, frame, detections = load_video_context()
     material_for_recommendation = st.session_state.get("dialog_material_select") or st.session_state.get(
         "sidebar_material_select"
     )
@@ -685,8 +692,16 @@ if uploaded is not None:
             )
 
 elif st.session_state.get("video_path"):
+    info, frame, detections = load_video_context()
+    preflight_status = classify_preflight_status(
+        st.session_state.get("ai_preflight_result"),
+        detections,
+        st.session_state.get("recommended_processing_profile"),
+    )
     if st.session_state.get("settings_confirmed"):
-        render_settings_summary()
+        render_settings_summary(preflight_status=preflight_status)
+    elif not st.session_state.get("settings_dialog_dismissed"):
+        settings_review_dialog(info, detections)
     else:
         st.warning("A video is already loaded, but its settings still need confirmation.")
         if st.button("⚙️ Review Current Settings", type="primary", key="reopen_loaded_video_settings_btn"):
