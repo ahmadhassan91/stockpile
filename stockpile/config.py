@@ -84,6 +84,10 @@ class VolumeConfig:
     toe_footprint_outer_percentile: float = 97.0
     toe_footprint_blend_factor: float = 0.40
     toe_footprint_min_sector_coverage: float = 0.55
+    toe_slope_break_bins: int = 28
+    toe_slope_break_surface_percentile: float = 82.0
+    toe_slope_break_height_m: float = 0.10
+    toe_slope_break_consecutive_bins: int = 2
     min_toe_contour_area_ratio: float = 0.78
     min_toe_footprint_area_ratio: float = 0.55
     min_cone_footprint_area_ratio: float = 0.7

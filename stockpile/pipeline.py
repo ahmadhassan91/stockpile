@@ -376,6 +376,7 @@ class Pipeline:
                 gp_result.pile_cloud,
                 self.config.volume,
                 result.cone_3d_positions if result.cone_3d_positions else None,
+                gp_result.full_cloud_transformed,
             )
             result.volume = vol
             result.weight_kg = vol.recommended_m3 * self.config.material_density

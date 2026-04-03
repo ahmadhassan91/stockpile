@@ -86,6 +86,22 @@ def _scale_polygon_about_centroid(polygon_xy: np.ndarray, scale_factor: float) -
     return centroid + (polygon_xy - centroid) * scale_factor
 
 
+def _smooth_nan_profile(values: np.ndarray, passes: int = 1) -> np.ndarray:
+    """Apply a small moving average while ignoring NaNs."""
+    smoothed = values.astype(float).copy()
+    for _ in range(max(1, passes)):
+        updated = smoothed.copy()
+        for idx, value in enumerate(smoothed):
+            if np.isnan(value):
+                continue
+            window = smoothed[max(0, idx - 1): min(len(smoothed), idx + 2)]
+            valid = window[~np.isnan(window)]
+            if len(valid) >= 2:
+                updated[idx] = float(np.mean(valid))
+        smoothed = updated
+    return smoothed
+
+
 def _radial_blended_polygon(
     points_xy: np.ndarray,
     center_xy: np.ndarray,
@@ -141,6 +157,104 @@ def _radial_blended_polygon(
     return np.asarray(vertices)
 
 
+def _radial_slope_break_polygon(
+    points_xyz: np.ndarray,
+    center_xy: np.ndarray,
+    sector_count: int,
+    bin_count: int,
+    surface_percentile: float,
+    height_threshold_m: float,
+    consecutive_bins: int,
+    min_sector_coverage: float,
+) -> np.ndarray | None:
+    """Estimate the toe from the radial ground-to-pile transition in the full scene."""
+    if len(points_xyz) < max(64, sector_count * 4):
+        return None
+
+    points_xy = points_xyz[:, :2]
+    z = points_xyz[:, 2]
+    rel = points_xy - center_xy
+    radii = np.linalg.norm(rel, axis=1)
+    valid = radii > 1e-6
+    if np.count_nonzero(valid) < max(64, sector_count * 4):
+        return None
+
+    rel = rel[valid]
+    radii = radii[valid]
+    z = z[valid]
+    angles = (np.arctan2(rel[:, 1], rel[:, 0]) + 2 * np.pi) % (2 * np.pi)
+    sector_edges = np.linspace(0.0, 2 * np.pi, sector_count + 1)
+
+    vertices: list[np.ndarray] = []
+    populated = 0
+    for sector_idx in range(sector_count):
+        start = sector_edges[sector_idx]
+        end = sector_edges[sector_idx + 1]
+        if sector_idx == sector_count - 1:
+            mask = (angles >= start) & (angles <= end)
+        else:
+            mask = (angles >= start) & (angles < end)
+        if int(np.count_nonzero(mask)) < max(12, bin_count):
+            continue
+
+        sector_radii = radii[mask]
+        sector_z = z[mask]
+        max_radius = float(np.percentile(sector_radii, 99))
+        if max_radius <= 1e-6:
+            continue
+
+        bin_edges = np.linspace(0.0, max_radius, bin_count + 1)
+        bin_idx = np.digitize(sector_radii, bin_edges) - 1
+        bin_idx = np.clip(bin_idx, 0, bin_count - 1)
+
+        profile = np.full(bin_count, np.nan)
+        for idx in range(bin_count):
+            bin_mask = bin_idx == idx
+            if int(np.count_nonzero(bin_mask)) < 4:
+                continue
+            profile[idx] = float(np.percentile(sector_z[bin_mask], surface_percentile))
+
+        profile = _smooth_nan_profile(profile, passes=2)
+        if np.count_nonzero(~np.isnan(profile)) < max(6, bin_count // 3):
+            continue
+
+        ground_seen = 0
+        high_run = 0
+        first_high_idx = None
+        toe_radius = None
+        for idx in range(bin_count - 1, -1, -1):
+            height = profile[idx]
+            if np.isnan(height):
+                continue
+            if height <= height_threshold_m:
+                ground_seen += 1
+                high_run = 0
+                first_high_idx = None
+                continue
+            if ground_seen <= 0:
+                continue
+            if first_high_idx is None:
+                first_high_idx = idx
+            high_run += 1
+            if high_run >= max(1, consecutive_bins):
+                toe_radius = float(bin_edges[first_high_idx + 1])
+                break
+
+        if toe_radius is None:
+            continue
+
+        populated += 1
+        sector_theta = 0.5 * (start + end)
+        vertices.append(
+            center_xy
+            + np.array([np.cos(sector_theta), np.sin(sector_theta)]) * toe_radius
+        )
+
+    if populated / sector_count < min_sector_coverage or len(vertices) < 8:
+        return None
+    return np.asarray(vertices)
+
+
 def _polygon_area(polygon_xy: np.ndarray | None) -> float | None:
     """Compute polygon area from a convex vertex list."""
     if polygon_xy is None or len(polygon_xy) < 3:
@@ -154,6 +268,7 @@ def _polygon_area(polygon_xy: np.ndarray | None) -> float | None:
 def _build_footprint_polygon(
     points_xyz: np.ndarray,
     footprint_xy: np.ndarray | None,
+    full_scene_points_xyz: np.ndarray | None,
     buffer_m: float,
     toe_buffer_m: float,
     toe_height_fraction: float,
@@ -164,6 +279,10 @@ def _build_footprint_polygon(
     toe_outer_percentile: float,
     toe_blend_factor: float,
     toe_min_sector_coverage: float,
+    toe_slope_break_bins: int,
+    toe_slope_break_surface_percentile: float,
+    toe_slope_break_height_m: float,
+    toe_slope_break_consecutive_bins: int,
     min_toe_contour_area_ratio: float,
     min_toe_area_ratio: float,
     min_cone_area_ratio: float,
@@ -187,6 +306,21 @@ def _build_footprint_polygon(
             0.12,
             min(toe_max_height_m, pile_height_p95 * toe_height_fraction),
         )
+        slope_polygon = None
+        slope_area = None
+        if full_scene_points_xyz is not None and len(full_scene_points_xyz) >= toe_min_points:
+            slope_polygon = _radial_slope_break_polygon(
+                full_scene_points_xyz,
+                center_xy=footprint_center,
+                sector_count=toe_sector_count,
+                bin_count=toe_slope_break_bins,
+                surface_percentile=toe_slope_break_surface_percentile,
+                height_threshold_m=min(toe_height_upper, toe_slope_break_height_m),
+                consecutive_bins=toe_slope_break_consecutive_bins,
+                min_sector_coverage=toe_min_sector_coverage,
+            )
+            slope_area = _polygon_area(slope_polygon)
+
         toe_mask = z <= toe_height_upper
         toe_candidate_points = int(np.count_nonzero(toe_mask))
         if toe_candidate_points >= toe_min_points:
@@ -205,6 +339,16 @@ def _build_footprint_polygon(
             toe_contour_area = _polygon_area(toe_contour_polygon)
 
             if (
+                slope_polygon is not None
+                and slope_area is not None
+                and toe_hull_area is not None
+            ):
+                target_area = max(slope_area, toe_hull_area * min_toe_contour_area_ratio)
+                scale_factor = np.sqrt(target_area / max(slope_area, 1e-6))
+                toe_polygon = _scale_polygon_about_centroid(slope_polygon, scale_factor)
+                toe_source = "toe_slope_break_guarded" if target_area > slope_area + 1e-6 else "toe_slope_break"
+                toe_area = _polygon_area(toe_polygon)
+            elif (
                 toe_contour_polygon is not None
                 and toe_contour_area is not None
                 and toe_hull_polygon is not None
@@ -301,6 +445,7 @@ def volume_grid_integration(
     points: np.ndarray,
     resolution: float = 0.05,
     footprint_xy: np.ndarray | None = None,
+    full_scene_points: np.ndarray | None = None,
     footprint_buffer_m: float = 0.75,
     toe_footprint_buffer_m: float = 0.25,
     toe_footprint_height_fraction: float = 0.18,
@@ -311,6 +456,10 @@ def volume_grid_integration(
     toe_footprint_outer_percentile: float = 97.0,
     toe_footprint_blend_factor: float = 0.40,
     toe_footprint_min_sector_coverage: float = 0.55,
+    toe_slope_break_bins: int = 28,
+    toe_slope_break_surface_percentile: float = 82.0,
+    toe_slope_break_height_m: float = 0.10,
+    toe_slope_break_consecutive_bins: int = 2,
     min_toe_contour_area_ratio: float = 0.78,
     min_toe_footprint_area_ratio: float = 0.55,
     min_cone_footprint_area_ratio: float = 0.7,
@@ -337,6 +486,7 @@ def volume_grid_integration(
     footprint_polygon, footprint_source, toe_candidate_points, toe_height_upper = _build_footprint_polygon(
         points,
         footprint_xy,
+        full_scene_points,
         footprint_buffer_m,
         toe_footprint_buffer_m,
         toe_footprint_height_fraction,
@@ -347,6 +497,10 @@ def volume_grid_integration(
         toe_footprint_outer_percentile,
         toe_footprint_blend_factor,
         toe_footprint_min_sector_coverage,
+        toe_slope_break_bins,
+        toe_slope_break_surface_percentile,
+        toe_slope_break_height_m,
+        toe_slope_break_consecutive_bins,
         min_toe_contour_area_ratio,
         min_toe_footprint_area_ratio,
         min_cone_footprint_area_ratio,
@@ -471,6 +625,7 @@ def compute_volume(
     pile_cloud: o3d.geometry.PointCloud,
     config: VolumeConfig | None = None,
     footprint_points: list[np.ndarray] | np.ndarray | None = None,
+    full_scene_cloud: o3d.geometry.PointCloud | None = None,
 ) -> VolumeResult:
     """Compute volume using all three methods."""
     config = config or VolumeConfig()
@@ -502,10 +657,14 @@ def compute_volume(
         footprint_arr = np.asarray(footprint_points)
         if footprint_arr.ndim == 2 and footprint_arr.shape[0] >= 3:
             footprint_xy = footprint_arr[:, :2]
+    full_scene_points = None
+    if full_scene_cloud is not None:
+        full_scene_points = np.asarray(full_scene_cloud.points)
     grid_stats = volume_grid_integration(
         points,
         config.grid_resolution,
         footprint_xy=footprint_xy,
+        full_scene_points=full_scene_points,
         footprint_buffer_m=config.footprint_buffer_m,
         toe_footprint_buffer_m=config.toe_footprint_buffer_m,
         toe_footprint_height_fraction=config.toe_footprint_height_fraction,
@@ -516,6 +675,10 @@ def compute_volume(
         toe_footprint_outer_percentile=config.toe_footprint_outer_percentile,
         toe_footprint_blend_factor=config.toe_footprint_blend_factor,
         toe_footprint_min_sector_coverage=config.toe_footprint_min_sector_coverage,
+        toe_slope_break_bins=config.toe_slope_break_bins,
+        toe_slope_break_surface_percentile=config.toe_slope_break_surface_percentile,
+        toe_slope_break_height_m=config.toe_slope_break_height_m,
+        toe_slope_break_consecutive_bins=config.toe_slope_break_consecutive_bins,
         min_toe_contour_area_ratio=config.min_toe_contour_area_ratio,
         min_toe_footprint_area_ratio=config.min_toe_footprint_area_ratio,
         min_cone_footprint_area_ratio=config.min_cone_footprint_area_ratio,
