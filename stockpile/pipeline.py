@@ -162,6 +162,25 @@ class Pipeline:
                     f"Only {cal.num_cones_used} unique cone references were recovered; scale robustness is limited.",
                 )
 
+            borderline_multi_cone_review = (
+                cal.num_cones_used >= gates.min_unique_cones_block
+                and cal.num_cones_used <= gates.max_review_grade_unique_cones
+                and (
+                    cal.confidence < gates.min_verified_calibration_confidence
+                    or (
+                        cal.scale_disagreement_ratio is not None
+                        and cal.scale_disagreement_ratio > gates.max_verified_scale_disagreement
+                    )
+                )
+            )
+            if borderline_multi_cone_review:
+                result.review_grade = True
+                self._add_warning(
+                    result,
+                    "Scale calibration passed the minimum gates, but the confidence is still too limited for a fully "
+                    "verified label. Treat this as review-grade and cross-check before client-facing reporting.",
+                )
+
             if cal.scale_disagreement_ratio:
                 if cal.scale_disagreement_ratio > gates.max_scale_disagreement_block:
                     self._add_blocker(

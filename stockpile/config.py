@@ -101,6 +101,9 @@ class QualityGateConfig:
     min_calibration_confidence_block: float = 0.25
     min_unique_cones_warn: int = 3
     min_unique_cones_block: int = 2
+    min_verified_calibration_confidence: float = 0.55
+    max_verified_scale_disagreement: float = 1.8
+    max_review_grade_unique_cones: int = 2
     max_scale_disagreement_warn: float = 1.5
     max_scale_disagreement_block: float = 3.5
     min_pile_points_warn: int = 5000
