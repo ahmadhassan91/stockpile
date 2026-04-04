@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import gzip
 import logging
+import os
 import pickle
 from pathlib import Path
 from typing import Any
@@ -42,6 +43,13 @@ PERSISTED_SESSION_KEYS = tuple(SIDEBAR_SETTING_KEYS) + (
     "manual_scale_override",
 )
 SNAPSHOT_FILENAME = "last_session_snapshot.pkl.gz"
+SNAPSHOT_ENV_VAR = "STOCKPILE_ENABLE_SESSION_SNAPSHOT"
+
+
+def snapshot_persistence_enabled() -> bool:
+    """Return whether disk-backed session snapshots are enabled."""
+    value = os.environ.get(SNAPSHOT_ENV_VAR, "").strip().lower()
+    return value in {"1", "true", "yes", "on"}
 
 
 def _snapshot_path(workspace: str | Path | None = None) -> Path:
@@ -315,6 +323,12 @@ def persist_session_snapshot(
 ) -> Path:
     """Write the latest recoverable app state to disk."""
     snapshot_path = _snapshot_path(workspace or getattr(config, "workspace", None))
+    if not snapshot_persistence_enabled():
+        logger.debug(
+            "Skipping session snapshot persistence because %s is disabled",
+            SNAPSHOT_ENV_VAR,
+        )
+        return snapshot_path
     snapshot_path.parent.mkdir(parents=True, exist_ok=True)
 
     session_payload: dict[str, Any] = {}
@@ -342,6 +356,8 @@ def persist_session_snapshot(
 
 def restore_session_snapshot(session_state: Any, workspace: str | Path | None = None) -> bool:
     """Restore the latest recoverable app state into the current Streamlit session."""
+    if not snapshot_persistence_enabled():
+        return False
     snapshot_path = _snapshot_path(workspace)
     if not snapshot_path.exists():
         return False
