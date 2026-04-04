@@ -15,6 +15,12 @@ from .colmap_runner import (
     read_points3d_binary,
     run_colmap_reconstruction,
 )
+from .calibration_diagnostics import (
+    ConeObservationStats,
+    build_capture_readiness_notes,
+    describe_reference_constraint,
+    summarize_cone_observations,
+)
 from .cone_detection import detect_cones_in_frames
 from .config import PipelineConfig
 from .frame_extraction import extract_frames
@@ -76,6 +82,24 @@ class Pipeline:
         if message not in result.quality_blockers:
             result.quality_blockers.append(message)
 
+    def _append_calibration_note(self, calibration: CalibrationResult, message: str):
+        if message not in calibration.notes:
+            calibration.notes.append(message)
+
+    def _populate_calibration_diagnostics(
+        self,
+        calibration: CalibrationResult,
+        stats: ConeObservationStats,
+    ):
+        calibration.detected_cone_frames = stats.detected_cone_frames
+        calibration.registered_cone_frames = stats.registered_cone_frames
+        calibration.total_cone_detections = stats.total_cone_detections
+        calibration.max_detections_in_frame = stats.max_detections_in_frame
+        calibration.frames_with_multiple_detections = stats.frames_with_multiple_detections
+
+        for note in build_capture_readiness_notes(stats, calibration.num_cones_used):
+            self._append_calibration_note(calibration, note)
+
     def _assess_measurement_quality(self, result: PipelineResult):
         gates = self.config.quality_gates
         manual_scale = self.config.manual_scale_override is not None
@@ -133,6 +157,13 @@ class Pipeline:
                 )
 
             if cal.num_cones_used < gates.min_unique_cones_block:
+                cone_stats = ConeObservationStats(
+                    detected_cone_frames=cal.detected_cone_frames,
+                    registered_cone_frames=cal.registered_cone_frames,
+                    total_cone_detections=cal.total_cone_detections,
+                    max_detections_in_frame=cal.max_detections_in_frame,
+                    frames_with_multiple_detections=cal.frames_with_multiple_detections,
+                )
                 single_cone_review_eligible = (
                     cal.num_cones_used == 1
                     and cal.confidence >= gates.single_cone_review_min_confidence
@@ -148,13 +179,13 @@ class Pipeline:
                     result.review_grade = True
                     self._add_warning(
                         result,
-                        "Only 1 unique cone reference was recovered. The reconstructed pile looks consistent enough "
-                        "for review-grade use, but the scale should still be cross-checked before client reporting.",
+                        describe_reference_constraint(cone_stats, cal.num_cones_used)
+                        + " The reconstructed pile looks consistent enough for review-grade use, but the scale should still be cross-checked before client reporting.",
                     )
                 else:
                     self._add_blocker(
                         result,
-                        f"Only {cal.num_cones_used} unique cone reference(s) were recovered; more physical references are needed.",
+                        describe_reference_constraint(cone_stats, cal.num_cones_used),
                     )
             elif cal.num_cones_used < gates.min_unique_cones_warn:
                 self._add_warning(
@@ -309,6 +340,10 @@ class Pipeline:
             points3d = read_points3d_binary(model_dir / "points3D.bin")
             result.num_colmap_points = len(points3d)
             result.num_colmap_images = len(images)
+            cone_stats = summarize_cone_observations(
+                cone_detections,
+                {image.name for image in images.values()},
+            )
 
             self._report("colmap_reconstruction", 1.0,
                          f"{len(points3d)} 3D points, {len(images)} images registered")
@@ -330,6 +365,7 @@ class Pipeline:
                             cone_detections, images, points3d,
                             self.config.scale_calibration, cameras,
                         )
+                        self._populate_calibration_diagnostics(calibration, cone_stats)
                         result.calibration = calibration
                         result.cone_3d_positions = calibration.cone_3d_positions
                     except Exception:
@@ -342,6 +378,7 @@ class Pipeline:
                     cone_detections, images, points3d,
                     self.config.scale_calibration, cameras,
                 )
+                self._populate_calibration_diagnostics(calibration, cone_stats)
                 result.calibration = calibration
                 result.cone_3d_positions = calibration.cone_3d_positions
                 scale_factor = calibration.scale_factor

@@ -203,20 +203,32 @@ if result and not st.session_state.get("pipeline_running"):
             col1, col2, col3, col4 = st.columns(4)
             col1.metric("Scale Factor", f"{(result.scale_factor_m_per_unit or cal.scale_factor):.4f} m/unit")
             col2.metric("Cal. Confidence", f"{conf_pct:.0f}%")
-            col3.metric("Cones Used", str(cal.num_cones_used))
+            col3.metric("Unique Cones Used", str(cal.num_cones_used))
             if result.volume:
                 col4.metric("Volume (Grid)", f"{result.volume.recommended_m3:.1f} m³")
 
+            if cal.detected_cone_frames:
+                st.caption(
+                    f"Cone-bearing frames: {cal.detected_cone_frames} detected, "
+                    f"{cal.registered_cone_frames} registered into COLMAP, "
+                    f"max {cal.max_detections_in_frame} cone(s) in one frame."
+                )
+
             if cal.num_cones_used == 1:
+                clip_guidance = ""
+                if cal.max_detections_in_frame <= 1:
+                    clip_guidance = (
+                        " This clip never showed more than one cone at a time, so verified scale was not possible."
+                    )
                 if getattr(result, "review_grade", False):
                     st.warning(
                         f"{conf_icon} **Projection consistency is {conf_pct:.0f}%,** but only one unique cone was recovered. "
-                        "Treat this as a review-grade scale and cross-check it before client reporting."
+                        f"Treat this as a review-grade scale and cross-check it before client reporting.{clip_guidance}"
                     )
                 else:
                     st.warning(
                         f"{conf_icon} **Projection consistency is {conf_pct:.0f}%,** but only one unique cone was recovered. "
-                        "The run remains blocked until more physical references are visible."
+                        f"The run remains blocked until more physical references are visible.{clip_guidance}"
                     )
             elif conf_pct < 40:
                 st.error(

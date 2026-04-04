@@ -69,19 +69,32 @@ if result.calibration:
     col1, col2, col3, col4 = st.columns(4)
     col1.metric("Scale Factor", f"{scale_factor:.4f} m/unit")
     col2.metric("Confidence", f"{conf_pct:.0f}%", help="Based on cone detection consistency across frames")
-    col3.metric("Cones Detected", str(cal.num_cones_used))
+    col3.metric("Unique Cones Used", str(cal.num_cones_used))
     col4.metric("Scale Source", result.scale_source.replace("_", " ").title())
 
+    if cal.detected_cone_frames:
+        st.caption(
+            f"Cone-bearing frames: {cal.detected_cone_frames} detected, "
+            f"{cal.registered_cone_frames} registered into COLMAP, "
+            f"{cal.frames_with_multiple_detections} frame(s) with multiple cones, "
+            f"max {cal.max_detections_in_frame} cone(s) in one frame."
+        )
+
     if cal.num_cones_used == 1:
+        clip_guidance = ""
+        if cal.max_detections_in_frame <= 1:
+            clip_guidance = (
+                " This clip never showed more than one cone at a time, so verified scale was not possible on the current build."
+            )
         if getattr(result, "review_grade", False):
             st.warning(
                 f"🟡 **Projection consistency is {conf_pct:.0f}%,** but only one unique cone was recovered. "
-                "Treat this as review-grade scale and cross-check it before client-facing reporting."
+                f"Treat this as review-grade scale and cross-check it before client-facing reporting.{clip_guidance}"
             )
         else:
             st.warning(
                 f"🟡 **Projection consistency is {conf_pct:.0f}%,** but only one unique cone was recovered. "
-                "That leaves the run blocked pending stronger physical references."
+                f"That leaves the run blocked pending stronger physical references.{clip_guidance}"
             )
     elif conf_pct < 70:
         st.warning(

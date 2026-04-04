@@ -20,6 +20,11 @@ class CalibrationResult:
     num_cones_used: int
     per_cone_scales: list[float]
     cone_3d_positions: list[np.ndarray]
+    detected_cone_frames: int = 0
+    registered_cone_frames: int = 0
+    total_cone_detections: int = 0
+    max_detections_in_frame: int = 0
+    frames_with_multiple_detections: int = 0
     selected_method: str = "projection"
     projection_scale_factor: float | None = None
     projection_confidence: float | None = None
