@@ -2,6 +2,13 @@
 
 import streamlit as st
 
+from components.client_test_log import (
+    CLIENT_RUN_ATTEMPT_KEY,
+    CLIENT_RUN_ID_KEY,
+    CLIENT_SESSION_ID_KEY,
+    CLIENT_UPLOAD_ID_KEY,
+    ensure_client_session_id,
+)
 from components.persisted_session import (
     PERSISTED_SESSION_RESTORED_KEY,
     restore_session_snapshot,
@@ -31,6 +38,10 @@ def init_session_state():
         "_video_info": None,
         "progress_queue": None,
         "pipeline_thread": None,
+        CLIENT_SESSION_ID_KEY: None,
+        CLIENT_UPLOAD_ID_KEY: None,
+        CLIENT_RUN_ID_KEY: None,
+        CLIENT_RUN_ATTEMPT_KEY: 0,
         PERSISTED_SESSION_RESTORED_KEY: False,
     }
     for key, value in defaults.items():
@@ -40,3 +51,5 @@ def init_session_state():
     if not st.session_state.get(PERSISTED_SESSION_RESTORED_KEY):
         restore_session_snapshot(st.session_state)
         st.session_state[PERSISTED_SESSION_RESTORED_KEY] = True
+
+    ensure_client_session_id(st.session_state)

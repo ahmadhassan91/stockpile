@@ -7,19 +7,26 @@ import streamlit as st
 
 # ── Logging setup ──────────────────────────────────────────────────────────────
 LOG_FILE = "/tmp/stockpile_app.log"
+DEFAULT_LOG_LEVEL = os.environ.get("STOCKPILE_LOG_LEVEL", "INFO").strip().upper() or "INFO"
+
+
+def _resolve_log_level() -> int:
+    return getattr(logging, DEFAULT_LOG_LEVEL, logging.INFO)
 
 def _setup_logging():
     root = logging.getLogger()
     if any(isinstance(h, logging.FileHandler) and getattr(h, 'baseFilename', '') == LOG_FILE
            for h in root.handlers):
         return  # already set up
+    level = _resolve_log_level()
     fmt = logging.Formatter("%(asctime)s [%(levelname)s] %(name)s: %(message)s",
                             datefmt="%H:%M:%S")
     fh = logging.FileHandler(LOG_FILE)
     fh.setFormatter(fmt)
-    fh.setLevel(logging.DEBUG)
-    root.setLevel(logging.DEBUG)
+    fh.setLevel(level)
+    root.setLevel(level)
     root.addHandler(fh)
+    logging.getLogger("watchdog").setLevel(logging.WARNING)
 
 _setup_logging()
 

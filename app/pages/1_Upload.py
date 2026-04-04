@@ -14,6 +14,7 @@ from stockpile.frame_extraction import get_first_frame, get_video_info
 
 import sys
 sys.path.insert(0, str(Path(__file__).parent.parent))
+from components.client_test_log import append_client_test_event, start_new_upload_tracking
 from components.parameter_sidebar import (
     build_pipeline_config_from_state,
     get_pipeline_setting_signature,
@@ -92,6 +93,13 @@ def apply_dialog_settings():
         if key != "sidebar_admin_mode"
     )
     persist_session_snapshot(st.session_state, config=st.session_state.get("pipeline_config"))
+    append_client_test_event(
+        st.session_state,
+        "settings_confirmed",
+        config=st.session_state.get("pipeline_config"),
+        video_info=st.session_state.get("_video_info"),
+        detections=st.session_state.get("_cone_detections"),
+    )
 
 
 def infer_material_from_filename(filename: str) -> str | None:
@@ -521,6 +529,7 @@ if uploaded is not None:
     upload_signature = f"{uploaded.name}:{uploaded.size}"
     is_new_file = st.session_state.get("last_uploaded_signature") != upload_signature
     if is_new_file:
+        start_new_upload_tracking(st.session_state)
         st.session_state.settings_confirmed = False
         st.session_state.settings_dialog_dismissed = False
         st.session_state.confirmed_settings_signature = None
@@ -595,6 +604,14 @@ if uploaded is not None:
 
             status.update(label="Video ready!", state="complete", expanded=False)
             st.session_state["_upload_processed"] = True
+            append_client_test_event(
+                st.session_state,
+                "upload_ready",
+                config=st.session_state.get("pipeline_config"),
+                uploaded_file=uploaded,
+                video_info=st.session_state.get("_video_info"),
+                detections=st.session_state.get("_cone_detections"),
+            )
 
     info, frame, detections = load_video_context()
     material_for_recommendation = st.session_state.get("dialog_material_select") or st.session_state.get(

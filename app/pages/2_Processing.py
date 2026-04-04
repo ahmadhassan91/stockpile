@@ -27,6 +27,7 @@ from stockpile.pipeline import Pipeline, PipelineResult
 import sys
 from pathlib import Path
 sys.path.insert(0, str(Path(__file__).parent.parent))
+from components.client_test_log import append_client_test_event, start_new_run_tracking
 from components.persisted_session import clear_session_snapshot, persist_session_snapshot
 from components.reliability_status import classify_result_status, render_status_callout
 from components.session_init import init_session_state
@@ -96,6 +97,14 @@ if not st.session_state.get("pipeline_running", False):
         st.session_state.pipeline_result = None
         st.session_state.progress_queue = None
         st.session_state.pipeline_thread = None
+        start_new_run_tracking(st.session_state)
+        append_client_test_event(
+            st.session_state,
+            "processing_started",
+            config=config,
+            video_info=st.session_state.get("_video_info"),
+            detections=st.session_state.get("_cone_detections"),
+        )
         clear_session_snapshot(config.workspace)
 
         queue = Queue()
@@ -151,6 +160,14 @@ if st.session_state.get("pipeline_running", False):
                     st.session_state.progress_queue = None
                     st.session_state.pipeline_thread = None
                     persist_session_snapshot(st.session_state, result=result, config=config)
+                    append_client_test_event(
+                        st.session_state,
+                        "processing_failed" if result.error else "processing_completed",
+                        config=config,
+                        video_info=st.session_state.get("_video_info"),
+                        detections=st.session_state.get("_cone_detections"),
+                        result=result,
+                    )
                     progress_bar.progress(1.0)
 
                     if result.error:
