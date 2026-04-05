@@ -74,16 +74,119 @@ class ColmapPoint3D:
         self.point2d_idxs = point2d_idxs
 
 
-def _subsample_images_dir(images_dir: Path, max_frames: int) -> Path:
-    """If images_dir has more than max_frames images, copy an evenly-spaced
-    subset into a sibling directory and return that path instead."""
+def _build_priority_indices(
+    all_images: list[Path],
+    priority_image_names: set[str] | None,
+    priority_neighbor_radius: int,
+) -> list[int]:
+    """Return sorted frame indices that should be preserved in the COLMAP subset."""
+    if not priority_image_names:
+        return []
+
+    priority_indices: set[int] = set()
+    for index, image in enumerate(all_images):
+        if image.name not in priority_image_names:
+            continue
+        start = max(0, index - priority_neighbor_radius)
+        end = min(len(all_images), index + priority_neighbor_radius + 1)
+        priority_indices.update(range(start, end))
+    return sorted(priority_indices)
+
+
+def _count_images(images_dir: Path) -> int:
+    """Return the number of JPG/PNG images in a directory."""
+    return len(sorted(images_dir.glob("*.jpg")) + sorted(images_dir.glob("*.png")))
+
+
+def _quality_to_sift_settings(quality: str) -> tuple[int, int]:
+    """Map the high-level quality preset to SIFT extraction settings."""
+    normalized = str(quality).strip().lower()
+    if normalized == "low":
+        return 1600, 4096
+    if normalized == "high":
+        return 3200, 16384
+    return 2400, 8192
+
+
+def _run_colmap_command(
+    cmd: list[str],
+    workspace_dir: Path,
+    step_name: str,
+    timeout: int,
+) -> subprocess.CompletedProcess[str]:
+    """Run a COLMAP command and persist stdout/stderr for debugging."""
+    logger.info("Running COLMAP step %s: %s", step_name, " ".join(cmd))
+    result = subprocess.run(
+        cmd,
+        capture_output=True,
+        text=True,
+        timeout=timeout,
+        env={**os.environ, "QT_QPA_PLATFORM": "offscreen"},
+    )
+
+    if result.stdout:
+        (workspace_dir / f"{step_name}.stdout.log").write_text(result.stdout)
+    if result.stderr:
+        (workspace_dir / f"{step_name}.stderr.log").write_text(result.stderr)
+
+    if result.returncode != 0:
+        logger.error("COLMAP %s stdout: %s", step_name, result.stdout[-2000:] if result.stdout else "")
+        logger.error("COLMAP %s stderr: %s", step_name, result.stderr[-2000:] if result.stderr else "")
+        raise RuntimeError(f"COLMAP {step_name} failed with return code {result.returncode}")
+
+    return result
+
+
+def _registered_image_names(model_dir: Path) -> set[str]:
+    """Return the registered image filenames for a sparse model."""
+    model_dir = Path(model_dir)
+    if (model_dir / "images.bin").exists():
+        return {image.name for image in read_images_binary(model_dir / "images.bin").values()}
+    if (model_dir / "images.txt").exists():
+        names: set[str] = set()
+        for line in (model_dir / "images.txt").read_text().splitlines():
+            line = line.strip()
+            if not line or line.startswith("#"):
+                continue
+            parts = line.split()
+            if len(parts) >= 10 and parts[0].isdigit():
+                names.add(parts[9])
+        return names
+    return set()
+
+
+def _subsample_images_dir(
+    images_dir: Path,
+    max_frames: int,
+    priority_image_names: set[str] | None = None,
+    priority_neighbor_radius: int = 2,
+) -> Path:
+    """If images_dir has more than max_frames images, copy a prioritized subset.
+
+    We preserve cone-bearing frames and nearby context first, then fill the
+    remaining budget with an evenly spaced sample of the full walkthrough.
+    """
     import shutil
     all_images = sorted(images_dir.glob("*.jpg")) + sorted(images_dir.glob("*.png"))
     if len(all_images) <= max_frames:
         return images_dir
 
-    selected_idx = np.linspace(0, len(all_images) - 1, max_frames, dtype=int)
-    selected = [all_images[idx] for idx in selected_idx]
+    priority_indices = _build_priority_indices(
+        all_images,
+        priority_image_names=priority_image_names,
+        priority_neighbor_radius=priority_neighbor_radius,
+    )
+    if len(priority_indices) >= max_frames:
+        selected_idx = np.linspace(0, len(priority_indices) - 1, max_frames, dtype=int)
+        selected_indices = [priority_indices[idx] for idx in selected_idx]
+    else:
+        selected_indices = list(priority_indices)
+        remaining_budget = max_frames - len(selected_indices)
+        filler_pool = [idx for idx in range(len(all_images)) if idx not in set(selected_indices)]
+        if remaining_budget > 0 and filler_pool:
+            filler_idx = np.linspace(0, len(filler_pool) - 1, remaining_budget, dtype=int)
+            selected_indices.extend(filler_pool[idx] for idx in filler_idx)
+    selected = [all_images[idx] for idx in sorted(set(selected_indices))]
 
     subset_dir = images_dir.parent / "images_colmap_subset"
     if subset_dir.exists():
@@ -94,8 +197,8 @@ def _subsample_images_dir(images_dir: Path, max_frames: int) -> Path:
         shutil.copy2(img, subset_dir / img.name)
 
     logger.info(
-        "Subsampled %d → %d frames for COLMAP (even spacing)",
-        len(all_images), len(selected),
+        "Subsampled %d → %d frames for COLMAP (%d priority-preserved frames)",
+        len(all_images), len(selected), len(priority_indices),
     )
     return subset_dir
 
@@ -143,63 +246,162 @@ def run_colmap_reconstruction(
     images_dir: Path,
     workspace_dir: Path,
     config: ColmapConfig | None = None,
+    priority_image_names: set[str] | None = None,
+    priority_neighbor_radius: int = 2,
     progress_callback=None,
 ) -> Path:
-    """Run COLMAP automatic_reconstructor and return the sparse model directory."""
+    """Run COLMAP sparse reconstruction and return the sparse model directory."""
     config = config or ColmapConfig()
     workspace_dir = Path(workspace_dir)
     workspace_dir.mkdir(parents=True, exist_ok=True)
 
     # Subsample frames to avoid over-dense central reconstruction
-    images_dir = _subsample_images_dir(Path(images_dir), config.max_colmap_frames)
+    images_dir = _subsample_images_dir(
+        Path(images_dir),
+        config.max_colmap_frames,
+        priority_image_names=priority_image_names,
+        priority_neighbor_radius=priority_neighbor_radius,
+    )
+    selected_image_count = _count_images(images_dir)
 
     sparse_dir = workspace_dir / "sparse"
     database_path = workspace_dir / "database.db"
+    if database_path.exists():
+        database_path.unlink()
+    if sparse_dir.exists():
+        import shutil
 
-    cmd = [
+        shutil.rmtree(sparse_dir)
+    sparse_dir.mkdir(parents=True, exist_ok=True)
+
+    max_image_size, max_num_features = _quality_to_sift_settings(config.quality)
+
+    if progress_callback:
+        progress_callback(0.05)
+
+    feature_cmd = [
         config.colmap_binary,
-        "automatic_reconstructor",
-        "--workspace_path", str(workspace_dir.resolve()),
+        "feature_extractor",
+        "--database_path", str(database_path.resolve()),
         "--image_path", str(images_dir.resolve()),
-        "--data_type", "video",
-        "--quality", config.quality,
-        "--single_camera", "1" if config.single_camera else "0",
-        "--dense", "0",
-        "--use_gpu", "1" if config.use_gpu else "0",
+        "--ImageReader.camera_model", str(config.camera_model),
+        "--ImageReader.single_camera", "1" if config.single_camera else "0",
+        "--FeatureExtraction.use_gpu", "1" if config.use_gpu else "0",
+        "--FeatureExtraction.max_image_size", str(max_image_size),
+        "--SiftExtraction.max_num_features", str(max_num_features),
     ]
-
-    logger.info("Running COLMAP: %s", " ".join(cmd))
-    if progress_callback:
-        progress_callback(0.1)
-
     try:
-        result = subprocess.run(
-            cmd,
-            capture_output=True,
-            text=True,
-            timeout=14400,  # 4 hours timeout
-            env={**os.environ, "QT_QPA_PLATFORM": "offscreen"},
-        )
+        _run_colmap_command(feature_cmd, workspace_dir, "feature_extractor", timeout=3600)
 
-        if result.returncode != 0:
-            logger.error("COLMAP stdout: %s", result.stdout[-2000:] if result.stdout else "")
-            logger.error("COLMAP stderr: %s", result.stderr[-2000:] if result.stderr else "")
-            raise RuntimeError(f"COLMAP failed with return code {result.returncode}")
+        if progress_callback:
+            progress_callback(0.2)
 
-        if result.stdout:
-            (workspace_dir / "automatic_reconstructor.stdout.log").write_text(result.stdout)
-        if result.stderr:
-            (workspace_dir / "automatic_reconstructor.stderr.log").write_text(result.stderr)
+        use_exhaustive_matcher = selected_image_count <= 160
+        if config.use_sequential_matching and not use_exhaustive_matcher:
+            matcher_cmd = [
+                config.colmap_binary,
+                "sequential_matcher",
+                "--database_path", str(database_path.resolve()),
+                "--FeatureMatching.use_gpu", "1" if config.use_gpu else "0",
+                "--FeatureMatching.guided_matching", "1",
+                "--SequentialMatching.overlap", "20" if priority_image_names else "15",
+                "--SequentialMatching.quadratic_overlap", "1",
+                "--SequentialMatching.loop_detection", "1" if priority_image_names else "0",
+            ]
+            matcher_step = "sequential_matcher"
+        else:
+            matcher_cmd = [
+                config.colmap_binary,
+                "exhaustive_matcher",
+                "--database_path", str(database_path.resolve()),
+                "--FeatureMatching.use_gpu", "1" if config.use_gpu else "0",
+                "--FeatureMatching.guided_matching", "1",
+            ]
+            matcher_step = "exhaustive_matcher"
 
-        logger.info("COLMAP reconstruction complete")
+        _run_colmap_command(matcher_cmd, workspace_dir, matcher_step, timeout=7200)
 
-    except subprocess.TimeoutExpired:
-        raise RuntimeError("COLMAP timed out after 4 hours")
+        if progress_callback:
+            progress_callback(0.45)
 
-    if progress_callback:
-        progress_callback(0.8)
+        mapper_cmd = [
+            config.colmap_binary,
+            "mapper",
+            "--database_path", str(database_path.resolve()),
+            "--image_path", str(images_dir.resolve()),
+            "--output_path", str(sparse_dir.resolve()),
+            "--Mapper.multiple_models", "0",
+            "--Mapper.min_model_size", "5",
+            "--Mapper.ba_use_gpu", "1" if config.use_gpu else "0",
+        ]
+        _run_colmap_command(mapper_cmd, workspace_dir, "mapper", timeout=7200)
+        model_dir = _find_sparse_model_dir(sparse_dir)
 
-    model_dir = _find_sparse_model_dir(sparse_dir)
+        if progress_callback:
+            progress_callback(0.75)
+
+        if priority_image_names:
+            registered_after_mapper = _registered_image_names(model_dir)
+            missing_priority = sorted(
+                name for name in priority_image_names if name not in registered_after_mapper
+            )
+            if missing_priority:
+                registrator_output_dir = workspace_dir / "sparse_registered"
+                triangulated_output_dir = workspace_dir / "sparse_triangulated"
+                if registrator_output_dir.exists():
+                    import shutil
+
+                    shutil.rmtree(registrator_output_dir)
+                if triangulated_output_dir.exists():
+                    import shutil
+
+                    shutil.rmtree(triangulated_output_dir)
+                registrator_output_dir.mkdir(parents=True, exist_ok=True)
+                triangulated_output_dir.mkdir(parents=True, exist_ok=True)
+
+                registrator_cmd = [
+                    config.colmap_binary,
+                    "image_registrator",
+                    "--database_path", str(database_path.resolve()),
+                    "--input_path", str(model_dir.resolve()),
+                    "--output_path", str(registrator_output_dir.resolve()),
+                    "--Mapper.ba_use_gpu", "1" if config.use_gpu else "0",
+                    "--Mapper.abs_pose_min_num_inliers", "20",
+                ]
+                _run_colmap_command(registrator_cmd, workspace_dir, "image_registrator", timeout=3600)
+
+                triangulator_cmd = [
+                    config.colmap_binary,
+                    "point_triangulator",
+                    "--database_path", str(database_path.resolve()),
+                    "--image_path", str(images_dir.resolve()),
+                    "--input_path", str(registrator_output_dir.resolve()),
+                    "--output_path", str(triangulated_output_dir.resolve()),
+                    "--clear_points", "1",
+                    "--Mapper.ba_use_gpu", "1" if config.use_gpu else "0",
+                ]
+                _run_colmap_command(triangulator_cmd, workspace_dir, "point_triangulator", timeout=3600)
+
+                triangulated_model_dir = _find_sparse_model_dir(triangulated_output_dir)
+                registered_after_triangulation = _registered_image_names(triangulated_model_dir)
+                if len(registered_after_triangulation) > len(registered_after_mapper):
+                    logger.info(
+                        "Image registrator recovered %d additional images (%d -> %d)",
+                        len(registered_after_triangulation) - len(registered_after_mapper),
+                        len(registered_after_mapper),
+                        len(registered_after_triangulation),
+                    )
+                    model_dir = triangulated_model_dir
+                else:
+                    logger.info(
+                        "Image registrator did not improve registration coverage (%d images)",
+                        len(registered_after_mapper),
+                    )
+
+    except subprocess.TimeoutExpired as exc:
+        raise RuntimeError("COLMAP timed out during explicit sparse reconstruction") from exc
+
+    logger.info("COLMAP reconstruction complete with %d selected images", selected_image_count)
 
     if progress_callback:
         progress_callback(1.0)

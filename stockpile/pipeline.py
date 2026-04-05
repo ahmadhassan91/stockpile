@@ -128,6 +128,11 @@ class Pipeline:
                 result,
                 f"Pile height reached {pile_height:.2f} m; verify that the reconstructed shape is consistent with site conditions.",
             )
+        if pile_height > gates.tall_pile_block_m:
+            self._add_blocker(
+                result,
+                f"Pile height reached {pile_height:.2f} m, which exceeds the stability ceiling ({gates.tall_pile_block_m:.2f} m).",
+            )
 
         if peak_relief_ratio is not None:
             if peak_relief_m > gates.peak_relief_block_m and peak_relief_ratio > gates.peak_relief_block_ratio:
@@ -257,6 +262,15 @@ class Pipeline:
                         result,
                         f"Grid volume is {vol.grid_to_hull_ratio:.1f}x the convex hull volume; edge interpolation may be inflating the estimate.",
                     )
+                    if (
+                        pile_height > gates.tall_pile_warn_m
+                        and vol.grid_to_hull_ratio >= gates.tall_pile_grid_to_hull_block_ratio
+                    ):
+                        self._add_blocker(
+                            result,
+                            "The reconstruction shows a tall pile together with strong grid/hull inflation, "
+                            "which is a high-risk instability pattern.",
+                        )
 
             if vol.recommended_note:
                 self._add_warning(result, vol.recommended_note)
@@ -329,6 +343,7 @@ class Pipeline:
                 self.config.images_dir,
                 self.config.colmap_dir,
                 self.config.colmap,
+                priority_image_names=set(cone_detections.keys()),
                 progress_callback=lambda p: self._report("colmap_reconstruction", p),
             )
             result.sparse_model_dir = model_dir

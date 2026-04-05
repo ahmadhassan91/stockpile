@@ -113,6 +113,8 @@ class QualityGateConfig:
     max_grid_to_hull_warn_ratio: float = 2.5
     max_grid_to_hull_block_ratio: float = 5.0
     tall_pile_warn_m: float = 12.0
+    tall_pile_block_m: float = 15.0
+    tall_pile_grid_to_hull_block_ratio: float = 2.5
     peak_relief_warn_m: float = 1.0
     peak_relief_block_m: float = 2.0
     peak_relief_warn_ratio: float = 1.08
