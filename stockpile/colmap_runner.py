@@ -521,6 +521,31 @@ def run_colmap_reconstruction(
         registered_images = len(_registered_image_names(model_dir))
         if selected_image_count > 0:
             registered_ratio = registered_images / selected_image_count
+            if registered_ratio < float(config.min_registered_image_ratio) and init_pair:
+                logger.warning(
+                    "Mapper registered only %d/%d images (%.1f%%) with fixed init pair %s; "
+                    "retrying without forced pair.",
+                    registered_images,
+                    selected_image_count,
+                    registered_ratio * 100,
+                    init_pair,
+                )
+                import shutil
+
+                if sparse_dir.exists():
+                    shutil.rmtree(sparse_dir)
+                sparse_dir.mkdir(parents=True, exist_ok=True)
+
+                _run_colmap_command(
+                    mapper_cmd,
+                    workspace_dir,
+                    "mapper_retry_low_registration",
+                    timeout=mapper_timeout_seconds,
+                )
+                model_dir = _find_sparse_model_dir(sparse_dir)
+                registered_images = len(_registered_image_names(model_dir))
+                registered_ratio = registered_images / selected_image_count
+
             if registered_ratio < float(config.min_registered_image_ratio):
                 raise RuntimeError(
                     f"Only {registered_images}/{selected_image_count} images registered "
