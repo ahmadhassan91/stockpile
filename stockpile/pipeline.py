@@ -477,6 +477,12 @@ class Pipeline:
 
         except Exception as e:
             result.error = str(e)
+            result.publishable = False
+            result.review_grade = False
+            if not result.quality_blockers:
+                result.quality_blockers.append(
+                    f"Pipeline failed at stage '{result.stage or 'unknown'}': {result.error}"
+                )
             logger.exception("Pipeline failed at stage '%s'", result.stage)
 
         return result

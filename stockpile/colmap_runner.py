@@ -2,6 +2,7 @@
 
 import logging
 import os
+import sqlite3
 import struct
 import subprocess
 from collections import namedtuple
@@ -106,6 +107,18 @@ def _quality_to_sift_settings(quality: str) -> tuple[int, int]:
     if normalized == "high":
         return 3200, 16384
     return 2400, 8192
+
+
+def _count_database_matches(database_path: Path) -> int:
+    """Return the number of geometric matches stored in the COLMAP database."""
+    if not Path(database_path).exists():
+        return 0
+    try:
+        with sqlite3.connect(str(database_path)) as conn:
+            row = conn.execute("SELECT COUNT(*) FROM two_view_geometries").fetchone()
+    except Exception:
+        return 0
+    return int(row[0]) if row else 0
 
 
 def _run_colmap_command(
@@ -320,6 +333,25 @@ def run_colmap_reconstruction(
             matcher_step = "exhaustive_matcher"
 
         _run_colmap_command(matcher_cmd, workspace_dir, matcher_step, timeout=7200)
+        if matcher_step == "sequential_matcher":
+            geometric_matches = _count_database_matches(database_path)
+            if geometric_matches == 0:
+                logger.warning(
+                    "Sequential matcher produced no geometric matches; retrying with exhaustive matcher."
+                )
+                exhaustive_cmd = [
+                    config.colmap_binary,
+                    "exhaustive_matcher",
+                    "--database_path", str(database_path.resolve()),
+                    "--FeatureMatching.use_gpu", "1" if config.use_gpu else "0",
+                    "--FeatureMatching.guided_matching", "1",
+                ]
+                _run_colmap_command(exhaustive_cmd, workspace_dir, "exhaustive_matcher_retry", timeout=7200)
+                geometric_matches = _count_database_matches(database_path)
+            if geometric_matches == 0:
+                raise RuntimeError(
+                    "COLMAP matching produced zero image pairs, so sparse mapping cannot start."
+                )
 
         if progress_callback:
             progress_callback(0.45)
