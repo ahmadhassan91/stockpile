@@ -411,18 +411,33 @@ def run_colmap_reconstruction(
             "--Mapper.num_threads", str(config.mapper_num_threads),
             "--Mapper.multiple_models", "0",
             "--Mapper.min_model_size", "5",
-            "--Mapper.init_num_trials", "1",
+            "--Mapper.init_num_trials", "200",
             "--Mapper.ba_use_gpu", "1" if config.use_gpu else "0",
         ]
         init_pair = _choose_mapper_init_pair(database_path, int(config.min_init_pair_inliers))
+        mapper_cmd_with_pair = list(mapper_cmd)
         if init_pair:
-            mapper_cmd.extend(
+            mapper_cmd_with_pair.extend(
                 [
                     "--Mapper.init_image_id1", str(init_pair[0]),
                     "--Mapper.init_image_id2", str(init_pair[1]),
                 ]
             )
-        _run_colmap_command(mapper_cmd, workspace_dir, "mapper", timeout=7200)
+        try:
+            _run_colmap_command(mapper_cmd_with_pair, workspace_dir, "mapper", timeout=7200)
+        except RuntimeError:
+            if not init_pair:
+                raise
+            logger.warning(
+                "Mapper failed with fixed init pair %s; retrying without forced pair.",
+                init_pair,
+            )
+            _run_colmap_command(
+                mapper_cmd,
+                workspace_dir,
+                "mapper_retry_without_fixed_pair",
+                timeout=7200,
+            )
 
         model_dir = _find_sparse_model_dir(sparse_dir)
         registered_images = len(_registered_image_names(model_dir))
