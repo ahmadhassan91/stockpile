@@ -27,6 +27,14 @@ def _init_db(path: Path) -> None:
             )
             """
         )
+        conn.execute(
+            """
+            CREATE TABLE images (
+                image_id INTEGER PRIMARY KEY,
+                name TEXT NOT NULL
+            )
+            """
+        )
         conn.commit()
 
 
@@ -67,6 +75,47 @@ def test_choose_mapper_init_pair_returns_none_when_threshold_not_met(tmp_path):
         conn.commit()
 
     assert _choose_mapper_init_pair(db_path, min_inliers=20) is None
+
+
+def test_choose_mapper_init_pair_prefers_wider_baseline_when_gap_requested(tmp_path):
+    db_path = tmp_path / "database.db"
+    _init_db(db_path)
+    with sqlite3.connect(str(db_path)) as conn:
+        conn.execute("INSERT INTO images(image_id, name) VALUES (?, ?)", (84, "frame_00084.jpg"))
+        conn.execute("INSERT INTO images(image_id, name) VALUES (?, ?)", (85, "frame_00085.jpg"))
+        conn.execute("INSERT INTO images(image_id, name) VALUES (?, ?)", (20, "frame_00020.jpg"))
+        conn.execute("INSERT INTO images(image_id, name) VALUES (?, ?)", (60, "frame_00060.jpg"))
+        conn.execute(
+            "INSERT INTO two_view_geometries(pair_id, rows) VALUES (?, ?)",
+            (_encode_pair_id(84, 85), 120),
+        )
+        conn.execute(
+            "INSERT INTO two_view_geometries(pair_id, rows) VALUES (?, ?)",
+            (_encode_pair_id(20, 60), 110),
+        )
+        conn.commit()
+
+    assert _choose_mapper_init_pair(db_path, min_inliers=50, min_frame_gap=12) == (20, 60)
+
+
+def test_choose_mapper_init_pair_falls_back_when_no_pair_meets_gap(tmp_path):
+    db_path = tmp_path / "database.db"
+    _init_db(db_path)
+    with sqlite3.connect(str(db_path)) as conn:
+        conn.execute("INSERT INTO images(image_id, name) VALUES (?, ?)", (1, "frame_00001.jpg"))
+        conn.execute("INSERT INTO images(image_id, name) VALUES (?, ?)", (2, "frame_00002.jpg"))
+        conn.execute("INSERT INTO images(image_id, name) VALUES (?, ?)", (3, "frame_00003.jpg"))
+        conn.execute(
+            "INSERT INTO two_view_geometries(pair_id, rows) VALUES (?, ?)",
+            (_encode_pair_id(1, 2), 80),
+        )
+        conn.execute(
+            "INSERT INTO two_view_geometries(pair_id, rows) VALUES (?, ?)",
+            (_encode_pair_id(2, 3), 70),
+        )
+        conn.commit()
+
+    assert _choose_mapper_init_pair(db_path, min_inliers=20, min_frame_gap=12) == (1, 2)
 
 
 def test_count_database_geometric_matches_counts_only_positive_rows(tmp_path):

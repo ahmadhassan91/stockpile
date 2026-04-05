@@ -2,6 +2,7 @@
 
 import logging
 import os
+import re
 import sqlite3
 import struct
 import subprocess
@@ -158,30 +159,76 @@ def _decode_colmap_pair_id(pair_id: int) -> tuple[int, int]:
     return (image_id1, image_id2)
 
 
-def _choose_mapper_init_pair(database_path: Path, min_inliers: int) -> tuple[int, int] | None:
-    """Choose a deterministic mapper init pair from the strongest verified match."""
+def _frame_index_from_image_name(image_name: str) -> int | None:
+    """Extract a frame index from a COLMAP image name when available."""
+    stem = Path(str(image_name)).stem
+    match = re.search(r"(\d+)$", stem)
+    if not match:
+        return None
+    try:
+        return int(match.group(1))
+    except Exception:
+        return None
+
+
+def _choose_mapper_init_pair(
+    database_path: Path,
+    min_inliers: int,
+    min_frame_gap: int = 0,
+) -> tuple[int, int] | None:
+    """Choose a deterministic mapper init pair from verified matches.
+
+    When frame indices are available, prefer wide-baseline pairs by enforcing
+    an optional minimum frame gap.
+    """
     if not database_path.exists():
         return None
+
     query = (
         "SELECT pair_id, rows "
         "FROM two_view_geometries "
         "WHERE rows >= ? "
         "ORDER BY rows DESC, pair_id ASC "
-        "LIMIT 1"
+        "LIMIT 256"
     )
     try:
         with sqlite3.connect(str(database_path)) as conn:
-            row = conn.execute(query, (int(min_inliers),)).fetchone()
+            rows = conn.execute(query, (int(min_inliers),)).fetchall()
+            frame_idx_by_image_id: dict[int, int] = {}
+            if int(min_frame_gap) > 0:
+                try:
+                    image_rows = conn.execute("SELECT image_id, name FROM images").fetchall()
+                    for image_id, image_name in image_rows:
+                        idx = _frame_index_from_image_name(str(image_name))
+                        if idx is not None:
+                            frame_idx_by_image_id[int(image_id)] = idx
+                except Exception:
+                    frame_idx_by_image_id = {}
     except Exception:
         return None
 
-    if not row:
+    if not rows:
         return None
 
-    image_id1, image_id2 = _decode_colmap_pair_id(int(row[0]))
-    if image_id1 <= 0 or image_id2 <= 0:
-        return None
-    return (image_id1, image_id2)
+    first_valid_pair: tuple[int, int] | None = None
+    requested_gap = max(0, int(min_frame_gap))
+
+    for row in rows:
+        image_id1, image_id2 = _decode_colmap_pair_id(int(row[0]))
+        if image_id1 <= 0 or image_id2 <= 0:
+            continue
+        if first_valid_pair is None:
+            first_valid_pair = (image_id1, image_id2)
+        if requested_gap <= 0:
+            return (image_id1, image_id2)
+        idx1 = frame_idx_by_image_id.get(image_id1)
+        idx2 = frame_idx_by_image_id.get(image_id2)
+        if idx1 is None or idx2 is None:
+            continue
+        if abs(idx1 - idx2) >= requested_gap:
+            return (image_id1, image_id2)
+
+    return first_valid_pair
 
 
 def _subsample_images_dir(images_dir: Path, max_frames: int) -> Path:
@@ -433,7 +480,11 @@ def run_colmap_reconstruction(
             "--Mapper.ba_use_gpu", "1" if config.use_gpu else "0",
         ]
         mapper_timeout_seconds = max(120, int(config.mapper_max_runtime_seconds) + 90)
-        init_pair = _choose_mapper_init_pair(database_path, int(config.min_init_pair_inliers))
+        init_pair = _choose_mapper_init_pair(
+            database_path,
+            int(config.min_init_pair_inliers),
+            min_frame_gap=int(config.min_init_pair_frame_gap),
+        )
         mapper_cmd_with_pair = list(mapper_cmd)
         if init_pair:
             mapper_cmd_with_pair.extend(
