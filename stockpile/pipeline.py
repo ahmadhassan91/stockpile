@@ -343,7 +343,6 @@ class Pipeline:
                 self.config.images_dir,
                 self.config.colmap_dir,
                 self.config.colmap,
-                priority_image_names=set(cone_detections.keys()),
                 progress_callback=lambda p: self._report("colmap_reconstruction", p),
             )
             result.sparse_model_dir = model_dir
