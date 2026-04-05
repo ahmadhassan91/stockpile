@@ -48,6 +48,8 @@ class ColmapConfig:
     min_geometric_matches_for_mapper: int = 20
     min_registered_image_ratio: float = 0.70
     min_init_pair_inliers: int = 40
+    mapper_init_num_trials: int = 80
+    mapper_max_runtime_seconds: int = 420
     max_colmap_frames: int = 300  # use more frames on GPU-backed deployments for better pile coverage
 
 

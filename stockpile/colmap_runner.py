@@ -411,7 +411,8 @@ def run_colmap_reconstruction(
             "--Mapper.num_threads", str(config.mapper_num_threads),
             "--Mapper.multiple_models", "0",
             "--Mapper.min_model_size", "5",
-            "--Mapper.init_num_trials", "200",
+            "--Mapper.init_num_trials", str(config.mapper_init_num_trials),
+            "--Mapper.max_runtime_seconds", str(config.mapper_max_runtime_seconds),
             "--Mapper.ba_use_gpu", "1" if config.use_gpu else "0",
         ]
         init_pair = _choose_mapper_init_pair(database_path, int(config.min_init_pair_inliers))
