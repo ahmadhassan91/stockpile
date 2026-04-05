@@ -21,6 +21,7 @@ def init_session_state():
         "video_path": None,
         "pipeline_running": False,
         "pipeline_config": None,
+        "confirmed_pipeline_config": None,
         "settings_confirmed": False,
         "settings_dialog_dismissed": False,
         "confirmed_settings_signature": None,

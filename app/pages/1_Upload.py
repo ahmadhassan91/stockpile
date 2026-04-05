@@ -16,6 +16,7 @@ import sys
 sys.path.insert(0, str(Path(__file__).parent.parent))
 from components.client_test_log import append_client_test_event, start_new_upload_tracking
 from components.parameter_sidebar import (
+    build_pipeline_config_from_values,
     build_pipeline_config_from_state,
     get_pipeline_setting_signature,
     queue_sidebar_setting_overrides,
@@ -68,20 +69,19 @@ def apply_dialog_settings():
         for dialog_key, sidebar_key in SETTING_KEY_MAP.items()
     }
     queue_sidebar_setting_overrides(sidebar_overrides)
+    confirmed_config = build_pipeline_config_from_values(sidebar_overrides)
+    st.session_state["pipeline_config"] = confirmed_config
+    st.session_state["confirmed_pipeline_config"] = confirmed_config
 
     material = sidebar_overrides["sidebar_material_select"]
     if material == "Custom":
-        density = float(sidebar_overrides["sidebar_density_input"])
+        density = float(confirmed_config.material_density)
         density_display = f"{density:.0f} kg/m³"
     else:
         density = float(DENSITY_PRESETS[material])
         density_display = f"{density/1000:.2f} MT/m³ (max)"
 
-    st.session_state["manual_scale_override"] = (
-        float(sidebar_overrides["sidebar_manual_scale_value"])
-        if sidebar_overrides.get("sidebar_manual_scale_enabled")
-        else None
-    )
+    st.session_state["manual_scale_override"] = confirmed_config.manual_scale_override
     st.session_state["selected_material"] = material
     st.session_state["selected_density"] = density
     st.session_state["selected_density_display"] = density_display
@@ -92,11 +92,11 @@ def apply_dialog_settings():
         for key in SIDEBAR_SETTING_KEYS
         if key != "sidebar_admin_mode"
     )
-    persist_session_snapshot(st.session_state, config=st.session_state.get("pipeline_config"))
+    persist_session_snapshot(st.session_state, config=confirmed_config)
     append_client_test_event(
         st.session_state,
         "settings_confirmed",
-        config=st.session_state.get("pipeline_config"),
+        config=confirmed_config,
         video_info=st.session_state.get("_video_info"),
         detections=st.session_state.get("_cone_detections"),
     )
@@ -514,6 +514,7 @@ if (
 ):
     st.session_state.settings_confirmed = False
     st.session_state.settings_dialog_dismissed = False
+    st.session_state["confirmed_pipeline_config"] = None
 
 st.session_state.pipeline_config = build_pipeline_config_from_state()
 
@@ -533,6 +534,7 @@ if uploaded is not None:
         st.session_state.settings_confirmed = False
         st.session_state.settings_dialog_dismissed = False
         st.session_state.confirmed_settings_signature = None
+        st.session_state["confirmed_pipeline_config"] = None
         st.session_state["ai_preflight_result"] = None
         st.session_state["ai_preflight_source"] = None
         st.session_state["pipeline_result"] = None
@@ -727,4 +729,5 @@ elif st.session_state.get("video_path"):
             st.rerun()
 else:
     st.session_state.settings_confirmed = False
+    st.session_state["confirmed_pipeline_config"] = None
     st.info("Please upload a video to get started.")

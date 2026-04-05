@@ -261,6 +261,10 @@ class Pipeline:
             if vol.recommended_note:
                 self._add_warning(result, vol.recommended_note)
 
+        # Keep the verified label strict: warnings stay publishable, but are review-grade.
+        if result.quality_warnings and not result.quality_blockers:
+            result.review_grade = True
+
         if result.quality_blockers:
             result.review_grade = False
 

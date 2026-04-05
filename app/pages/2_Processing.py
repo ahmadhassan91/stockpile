@@ -1,5 +1,6 @@
 """Page 2: Pipeline execution with progress tracking."""
 
+import copy
 import threading
 import time
 from pathlib import Path
@@ -25,9 +26,9 @@ from stockpile.config import PipelineConfig
 from stockpile.pipeline import Pipeline, PipelineResult
 
 import sys
-from pathlib import Path
 sys.path.insert(0, str(Path(__file__).parent.parent))
 from components.client_test_log import append_client_test_event, start_new_run_tracking
+from components.parameter_sidebar import SIDEBAR_SETTING_KEYS
 from components.persisted_session import clear_session_snapshot, persist_session_snapshot
 from components.reliability_status import classify_result_status, render_status_callout
 from components.session_init import init_session_state
@@ -68,11 +69,30 @@ if not st.session_state.get("settings_confirmed"):
     )
     st.stop()
 
-config = st.session_state.get("pipeline_config") or PipelineConfig()
+current_signature = tuple(
+    (key, st.session_state.get(key))
+    for key in SIDEBAR_SETTING_KEYS
+    if key != "sidebar_admin_mode"
+)
+confirmed_signature = st.session_state.get("confirmed_settings_signature")
+if confirmed_signature not in (None, current_signature):
+    st.session_state.settings_confirmed = False
+    st.session_state["confirmed_pipeline_config"] = None
+    st.error(
+        "Settings changed after the last confirmation. "
+        "Please return to Upload, review the current settings, and confirm again."
+    )
+    st.stop()
 
-# Apply manual scale override from sidebar
-manual_scale = st.session_state.get("manual_scale_override")
-config.manual_scale_override = manual_scale
+confirmed_config = st.session_state.get("confirmed_pipeline_config")
+if confirmed_config is not None:
+    config = copy.deepcopy(confirmed_config)
+    config_source = "confirmed_pipeline_config"
+else:
+    config = copy.deepcopy(st.session_state.get("pipeline_config") or PipelineConfig())
+    config_source = "pipeline_config_fallback"
+    manual_scale = st.session_state.get("manual_scale_override")
+    config.manual_scale_override = manual_scale
 
 # Show current settings
 with st.expander("Current Settings"):
@@ -104,6 +124,7 @@ if not st.session_state.get("pipeline_running", False):
             config=config,
             video_info=st.session_state.get("_video_info"),
             detections=st.session_state.get("_cone_detections"),
+            extra={"config_source": config_source},
         )
         clear_session_snapshot(config.workspace)
 
@@ -167,6 +188,7 @@ if st.session_state.get("pipeline_running", False):
                         video_info=st.session_state.get("_video_info"),
                         detections=st.session_state.get("_cone_detections"),
                         result=result,
+                        extra={"config_source": config_source},
                     )
                     progress_bar.progress(1.0)
 
