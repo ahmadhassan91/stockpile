@@ -118,6 +118,31 @@ def test_choose_mapper_init_pair_falls_back_when_no_pair_meets_gap(tmp_path):
     assert _choose_mapper_init_pair(db_path, min_inliers=20, min_frame_gap=12) == (1, 2)
 
 
+def test_choose_mapper_init_pair_scans_beyond_early_candidates_for_wide_gap(tmp_path):
+    db_path = tmp_path / "database.db"
+    _init_db(db_path)
+    with sqlite3.connect(str(db_path)) as conn:
+        for image_id in range(1, 401):
+            conn.execute(
+                "INSERT INTO images(image_id, name) VALUES (?, ?)",
+                (image_id, f"frame_{image_id:05d}.jpg"),
+            )
+        # Many strong but near-consecutive pairs first.
+        for image_id in range(1, 330):
+            conn.execute(
+                "INSERT INTO two_view_geometries(pair_id, rows) VALUES (?, ?)",
+                (_encode_pair_id(image_id, image_id + 1), 10000 - image_id),
+            )
+        # Lower-ranked but wide-baseline candidate.
+        conn.execute(
+            "INSERT INTO two_view_geometries(pair_id, rows) VALUES (?, ?)",
+            (_encode_pair_id(10, 200), 9600),
+        )
+        conn.commit()
+
+    assert _choose_mapper_init_pair(db_path, min_inliers=100, min_frame_gap=12) == (10, 200)
+
+
 def test_count_database_geometric_matches_counts_only_positive_rows(tmp_path):
     db_path = tmp_path / "database.db"
     _init_db(db_path)

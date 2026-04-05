@@ -20,6 +20,7 @@ _COLMAP_MODEL_FILESETS = (
     ("cameras.txt", "images.txt", "points3D.txt"),
 )
 _COLMAP_PAIR_ID_PRIME = 2147483647
+_INIT_PAIR_SCAN_LIMIT = 5000
 
 # COLMAP binary format structures
 CameraModel = namedtuple("CameraModel", ["model_id", "model_name", "num_params"])
@@ -189,7 +190,7 @@ def _choose_mapper_init_pair(
         "FROM two_view_geometries "
         "WHERE rows >= ? "
         "ORDER BY rows DESC, pair_id ASC "
-        "LIMIT 256"
+        f"LIMIT {_INIT_PAIR_SCAN_LIMIT}"
     )
     try:
         with sqlite3.connect(str(database_path)) as conn:
