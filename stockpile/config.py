@@ -38,10 +38,10 @@ class ColmapConfig:
     camera_model: str = "SIMPLE_RADIAL"
     use_sequential_matching: bool = True
     use_gpu: bool = True
-    use_gpu_matching: bool = False  # CPU matching is slower but more stable on constrained GPUs.
-    feature_num_threads: int = 1
-    matching_num_threads: int = 1
-    mapper_num_threads: int = 1
+    use_gpu_matching: bool = True  # Falls back to CPU automatically if GPU matching fails.
+    feature_num_threads: int = -1
+    matching_num_threads: int = -1
+    mapper_num_threads: int = -1
     random_seed: int = 7
     max_num_matches: int = 8192
     max_num_features_cap: int = 8192
