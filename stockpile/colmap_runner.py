@@ -2,6 +2,7 @@
 
 import logging
 import os
+import sqlite3
 import struct
 import subprocess
 from collections import namedtuple
@@ -17,6 +18,7 @@ _COLMAP_MODEL_FILESETS = (
     ("cameras.bin", "images.bin", "points3D.bin"),
     ("cameras.txt", "images.txt", "points3D.txt"),
 )
+_COLMAP_PAIR_ID_PRIME = 2147483647
 
 # COLMAP binary format structures
 CameraModel = namedtuple("CameraModel", ["model_id", "model_name", "num_params"])
@@ -72,6 +74,97 @@ class ColmapPoint3D:
         self.error = error
         self.image_ids = image_ids
         self.point2d_idxs = point2d_idxs
+
+
+def _count_images(images_dir: Path) -> int:
+    """Return the number of JPG/PNG images in a directory."""
+    return len(sorted(images_dir.glob("*.jpg")) + sorted(images_dir.glob("*.png")))
+
+
+def _quality_to_sift_settings(quality: str) -> tuple[int, int]:
+    """Map quality presets to extraction image-size/features."""
+    normalized = str(quality).strip().lower()
+    if normalized == "low":
+        return 1600, 4096
+    if normalized == "high":
+        return 3200, 12288
+    return 2400, 8192
+
+
+def _run_colmap_command(
+    cmd: list[str],
+    workspace_dir: Path,
+    step_name: str,
+    timeout: int,
+) -> subprocess.CompletedProcess[str]:
+    """Run a COLMAP command and persist stdout/stderr for debugging."""
+    logger.info("Running COLMAP step %s: %s", step_name, " ".join(cmd))
+    result = subprocess.run(
+        cmd,
+        capture_output=True,
+        text=True,
+        timeout=timeout,
+        env={**os.environ, "QT_QPA_PLATFORM": "offscreen"},
+    )
+
+    if result.stdout:
+        (workspace_dir / f"{step_name}.stdout.log").write_text(result.stdout)
+    if result.stderr:
+        (workspace_dir / f"{step_name}.stderr.log").write_text(result.stderr)
+
+    if result.returncode != 0:
+        logger.error("COLMAP %s stdout: %s", step_name, result.stdout[-2000:] if result.stdout else "")
+        logger.error("COLMAP %s stderr: %s", step_name, result.stderr[-2000:] if result.stderr else "")
+        raise RuntimeError(f"COLMAP {step_name} failed with return code {result.returncode}")
+
+    return result
+
+
+def _count_database_geometric_matches(database_path: Path) -> int:
+    """Return the number of verified image pairs in the COLMAP database."""
+    if not database_path.exists():
+        return 0
+    try:
+        with sqlite3.connect(str(database_path)) as conn:
+            row = conn.execute("SELECT COUNT(*) FROM two_view_geometries WHERE rows > 0").fetchone()
+    except Exception:
+        return 0
+    return int(row[0]) if row else 0
+
+
+def _decode_colmap_pair_id(pair_id: int) -> tuple[int, int]:
+    """Decode COLMAP pair_id back into (image_id1, image_id2)."""
+    image_id2 = int(pair_id % _COLMAP_PAIR_ID_PRIME)
+    image_id1 = int((pair_id - image_id2) // _COLMAP_PAIR_ID_PRIME)
+    if image_id1 <= 0 or image_id2 <= 0:
+        return (0, 0)
+    return (image_id1, image_id2)
+
+
+def _choose_mapper_init_pair(database_path: Path, min_inliers: int) -> tuple[int, int] | None:
+    """Choose a deterministic mapper init pair from the strongest verified match."""
+    if not database_path.exists():
+        return None
+    query = (
+        "SELECT pair_id, rows "
+        "FROM two_view_geometries "
+        "WHERE rows >= ? "
+        "ORDER BY rows DESC, pair_id ASC "
+        "LIMIT 1"
+    )
+    try:
+        with sqlite3.connect(str(database_path)) as conn:
+            row = conn.execute(query, (int(min_inliers),)).fetchone()
+    except Exception:
+        return None
+
+    if not row:
+        return None
+
+    image_id1, image_id2 = _decode_colmap_pair_id(int(row[0]))
+    if image_id1 <= 0 or image_id2 <= 0:
+        return None
+    return (image_id1, image_id2)
 
 
 def _subsample_images_dir(images_dir: Path, max_frames: int) -> Path:
@@ -139,67 +232,217 @@ def _find_sparse_model_dir(sparse_dir: Path) -> Path:
     )
 
 
+def _registered_image_names(model_dir: Path) -> set[str]:
+    """Return the registered image filenames for a sparse model."""
+    model_dir = Path(model_dir)
+    if (model_dir / "images.bin").exists():
+        return {image.name for image in read_images_binary(model_dir / "images.bin").values()}
+    if (model_dir / "images.txt").exists():
+        names: set[str] = set()
+        for line in (model_dir / "images.txt").read_text().splitlines():
+            line = line.strip()
+            if not line or line.startswith("#"):
+                continue
+            parts = line.split()
+            if len(parts) >= 10 and parts[0].isdigit():
+                names.add(parts[9])
+        return names
+    return set()
+
+
+def _run_matcher_with_fallback(
+    matcher_kind: str,
+    *,
+    database_path: Path,
+    workspace_dir: Path,
+    config: ColmapConfig,
+    random_seed: int,
+    overlap: int,
+    step_name: str,
+) -> None:
+    """Run a matcher, retrying on CPU if GPU matching fails."""
+    def build_cmd(use_gpu: bool) -> list[str]:
+        cmd = [
+            config.colmap_binary,
+            matcher_kind,
+            "--database_path", str(database_path.resolve()),
+            "--default_random_seed", str(random_seed),
+            "--FeatureMatching.num_threads", str(config.matching_num_threads),
+            "--FeatureMatching.use_gpu", "1" if use_gpu else "0",
+            "--FeatureMatching.guided_matching", "1",
+            "--FeatureMatching.max_num_matches", str(config.max_num_matches),
+            "--TwoViewGeometry.random_seed", str(random_seed),
+        ]
+        if matcher_kind == "sequential_matcher":
+            cmd.extend(
+                [
+                    "--SequentialMatching.overlap", str(overlap),
+                    "--SequentialMatching.quadratic_overlap", "1",
+                    "--SequentialMatching.loop_detection", "0",
+                    "--SequentialMatching.num_threads", str(config.matching_num_threads),
+                ]
+            )
+        return cmd
+
+    try:
+        _run_colmap_command(
+            build_cmd(use_gpu=config.use_gpu and config.use_gpu_matching),
+            workspace_dir,
+            step_name,
+            timeout=7200,
+        )
+    except RuntimeError:
+        if config.use_gpu and config.use_gpu_matching:
+            logger.warning(
+                "COLMAP %s failed with GPU matching; retrying on CPU to preserve stability.",
+                step_name,
+            )
+            _run_colmap_command(build_cmd(use_gpu=False), workspace_dir, f"{step_name}_cpu_retry", timeout=7200)
+        else:
+            raise
+
+
 def run_colmap_reconstruction(
     images_dir: Path,
     workspace_dir: Path,
     config: ColmapConfig | None = None,
     progress_callback=None,
 ) -> Path:
-    """Run COLMAP automatic_reconstructor and return the sparse model directory."""
+    """Run an explicit COLMAP sparse reconstruction and return the model directory."""
     config = config or ColmapConfig()
     workspace_dir = Path(workspace_dir)
     workspace_dir.mkdir(parents=True, exist_ok=True)
 
-    # Subsample frames to avoid over-dense central reconstruction
     images_dir = _subsample_images_dir(Path(images_dir), config.max_colmap_frames)
+    selected_image_count = _count_images(images_dir)
 
     sparse_dir = workspace_dir / "sparse"
     database_path = workspace_dir / "database.db"
+    if database_path.exists():
+        database_path.unlink()
+    if sparse_dir.exists():
+        import shutil
 
-    cmd = [
-        config.colmap_binary,
-        "automatic_reconstructor",
-        "--workspace_path", str(workspace_dir.resolve()),
-        "--image_path", str(images_dir.resolve()),
-        "--data_type", "video",
-        "--quality", config.quality,
-        "--single_camera", "1" if config.single_camera else "0",
-        "--dense", "0",
-        "--use_gpu", "1" if config.use_gpu else "0",
-    ]
+        shutil.rmtree(sparse_dir)
+    sparse_dir.mkdir(parents=True, exist_ok=True)
 
-    logger.info("Running COLMAP: %s", " ".join(cmd))
+    random_seed = int(config.random_seed)
+    max_image_size, max_num_features = _quality_to_sift_settings(config.quality)
+    max_num_features = min(max_num_features, int(config.max_num_features_cap))
+
     if progress_callback:
-        progress_callback(0.1)
+        progress_callback(0.05)
 
     try:
-        result = subprocess.run(
-            cmd,
-            capture_output=True,
-            text=True,
-            timeout=14400,  # 4 hours timeout
-            env={**os.environ, "QT_QPA_PLATFORM": "offscreen"},
-        )
+        feature_cmd = [
+            config.colmap_binary,
+            "feature_extractor",
+            "--database_path", str(database_path.resolve()),
+            "--image_path", str(images_dir.resolve()),
+            "--default_random_seed", str(random_seed),
+            "--ImageReader.camera_model", str(config.camera_model),
+            "--ImageReader.single_camera", "1" if config.single_camera else "0",
+            "--FeatureExtraction.num_threads", str(config.feature_num_threads),
+            "--FeatureExtraction.use_gpu", "1" if config.use_gpu else "0",
+            "--FeatureExtraction.max_image_size", str(max_image_size),
+            "--SiftExtraction.max_num_features", str(max_num_features),
+        ]
+        _run_colmap_command(feature_cmd, workspace_dir, "feature_extractor", timeout=3600)
 
-        if result.returncode != 0:
-            logger.error("COLMAP stdout: %s", result.stdout[-2000:] if result.stdout else "")
-            logger.error("COLMAP stderr: %s", result.stderr[-2000:] if result.stderr else "")
-            raise RuntimeError(f"COLMAP failed with return code {result.returncode}")
+        if progress_callback:
+            progress_callback(0.2)
 
-        if result.stdout:
-            (workspace_dir / "automatic_reconstructor.stdout.log").write_text(result.stdout)
-        if result.stderr:
-            (workspace_dir / "automatic_reconstructor.stderr.log").write_text(result.stderr)
+        prefer_sequential = config.use_sequential_matching and selected_image_count > 160
+        if prefer_sequential:
+            _run_matcher_with_fallback(
+                "sequential_matcher",
+                database_path=database_path,
+                workspace_dir=workspace_dir,
+                config=config,
+                random_seed=random_seed,
+                overlap=15,
+                step_name="sequential_matcher",
+            )
+        else:
+            _run_matcher_with_fallback(
+                "exhaustive_matcher",
+                database_path=database_path,
+                workspace_dir=workspace_dir,
+                config=config,
+                random_seed=random_seed,
+                overlap=15,
+                step_name="exhaustive_matcher",
+            )
 
-        logger.info("COLMAP reconstruction complete")
+        geometric_matches = _count_database_geometric_matches(database_path)
+        if geometric_matches < int(config.min_geometric_matches_for_mapper) and prefer_sequential:
+            logger.warning(
+                "Sequential matcher produced only %d verified pairs; retrying with exhaustive matcher.",
+                geometric_matches,
+            )
+            _run_matcher_with_fallback(
+                "exhaustive_matcher",
+                database_path=database_path,
+                workspace_dir=workspace_dir,
+                config=config,
+                random_seed=random_seed,
+                overlap=15,
+                step_name="exhaustive_matcher_retry",
+            )
+            geometric_matches = _count_database_geometric_matches(database_path)
 
-    except subprocess.TimeoutExpired:
-        raise RuntimeError("COLMAP timed out after 4 hours")
+        if geometric_matches < int(config.min_geometric_matches_for_mapper):
+            raise RuntimeError(
+                f"COLMAP matching produced only {geometric_matches} verified image pairs, below the mapper floor "
+                f"({config.min_geometric_matches_for_mapper})."
+            )
 
-    if progress_callback:
-        progress_callback(0.8)
+        if progress_callback:
+            progress_callback(0.45)
 
-    model_dir = _find_sparse_model_dir(sparse_dir)
+        mapper_cmd = [
+            config.colmap_binary,
+            "mapper",
+            "--database_path", str(database_path.resolve()),
+            "--image_path", str(images_dir.resolve()),
+            "--output_path", str(sparse_dir.resolve()),
+            "--default_random_seed", str(random_seed),
+            "--Mapper.random_seed", str(random_seed),
+            "--Mapper.num_threads", str(config.mapper_num_threads),
+            "--Mapper.multiple_models", "0",
+            "--Mapper.min_model_size", "5",
+            "--Mapper.init_num_trials", "1",
+            "--Mapper.ba_use_gpu", "1" if config.use_gpu else "0",
+        ]
+        init_pair = _choose_mapper_init_pair(database_path, int(config.min_init_pair_inliers))
+        if init_pair:
+            mapper_cmd.extend(
+                [
+                    "--Mapper.init_image_id1", str(init_pair[0]),
+                    "--Mapper.init_image_id2", str(init_pair[1]),
+                ]
+            )
+        _run_colmap_command(mapper_cmd, workspace_dir, "mapper", timeout=7200)
+
+        model_dir = _find_sparse_model_dir(sparse_dir)
+        registered_images = len(_registered_image_names(model_dir))
+        if selected_image_count > 0:
+            registered_ratio = registered_images / selected_image_count
+            if registered_ratio < float(config.min_registered_image_ratio):
+                raise RuntimeError(
+                    f"Only {registered_images}/{selected_image_count} images registered "
+                    f"({registered_ratio:.1%}), below the stability floor "
+                    f"({config.min_registered_image_ratio:.0%})."
+                )
+            logger.info(
+                "COLMAP registered %d/%d images (%.1f%%) with %d verified pairs.",
+                registered_images,
+                selected_image_count,
+                registered_ratio * 100,
+                geometric_matches,
+            )
+    except subprocess.TimeoutExpired as exc:
+        raise RuntimeError("COLMAP timed out during sparse reconstruction") from exc
 
     if progress_callback:
         progress_callback(1.0)
