@@ -8,6 +8,7 @@ from stockpile.colmap_runner import (
     _choose_mapper_init_pair,
     _count_database_geometric_matches,
     _decode_colmap_pair_id,
+    _is_unsuitable_init_pair_failure,
 )
 
 
@@ -87,3 +88,18 @@ def test_count_database_geometric_matches_counts_only_positive_rows(tmp_path):
         conn.commit()
 
     assert _count_database_geometric_matches(db_path) == 2
+
+
+def test_is_unsuitable_init_pair_failure_true_when_marker_present(tmp_path):
+    (tmp_path / "mapper.stderr.log").write_text(
+        "E.... Provided pair is unsuitable for initialization\n"
+    )
+    assert _is_unsuitable_init_pair_failure(tmp_path, "mapper")
+
+
+def test_is_unsuitable_init_pair_failure_false_for_other_errors(tmp_path):
+    (tmp_path / "mapper.stderr.log").write_text(
+        "Reached maximum runtime of 420 seconds.\n"
+        "Could not open /path/to/project.ini\n"
+    )
+    assert not _is_unsuitable_init_pair_failure(tmp_path, "mapper")

@@ -81,6 +81,23 @@ def _count_images(images_dir: Path) -> int:
     return len(sorted(images_dir.glob("*.jpg")) + sorted(images_dir.glob("*.png")))
 
 
+def _read_step_log(workspace_dir: Path, step_name: str, stream: str) -> str:
+    """Read a captured step log stream if present."""
+    log_path = Path(workspace_dir) / f"{step_name}.{stream}.log"
+    if not log_path.exists():
+        return ""
+    try:
+        return log_path.read_text()
+    except Exception:
+        return ""
+
+
+def _is_unsuitable_init_pair_failure(workspace_dir: Path, step_name: str) -> bool:
+    """Return True when mapper failed specifically due to an unusable init pair."""
+    stderr_text = _read_step_log(workspace_dir, step_name, "stderr")
+    return "provided pair is unsuitable for initialization" in stderr_text.lower()
+
+
 def _quality_to_sift_settings(quality: str) -> tuple[int, int]:
     """Map quality presets to extraction image-size/features."""
     normalized = str(quality).strip().lower()
@@ -415,6 +432,7 @@ def run_colmap_reconstruction(
             "--Mapper.max_runtime_seconds", str(config.mapper_max_runtime_seconds),
             "--Mapper.ba_use_gpu", "1" if config.use_gpu else "0",
         ]
+        mapper_timeout_seconds = max(120, int(config.mapper_max_runtime_seconds) + 90)
         init_pair = _choose_mapper_init_pair(database_path, int(config.min_init_pair_inliers))
         mapper_cmd_with_pair = list(mapper_cmd)
         if init_pair:
@@ -425,9 +443,16 @@ def run_colmap_reconstruction(
                 ]
             )
         try:
-            _run_colmap_command(mapper_cmd_with_pair, workspace_dir, "mapper", timeout=7200)
+            _run_colmap_command(
+                mapper_cmd_with_pair,
+                workspace_dir,
+                "mapper",
+                timeout=mapper_timeout_seconds,
+            )
         except RuntimeError:
             if not init_pair:
+                raise
+            if not _is_unsuitable_init_pair_failure(workspace_dir, "mapper"):
                 raise
             logger.warning(
                 "Mapper failed with fixed init pair %s; retrying without forced pair.",
@@ -437,7 +462,7 @@ def run_colmap_reconstruction(
                 mapper_cmd,
                 workspace_dir,
                 "mapper_retry_without_fixed_pair",
-                timeout=7200,
+                timeout=mapper_timeout_seconds,
             )
 
         model_dir = _find_sparse_model_dir(sparse_dir)
