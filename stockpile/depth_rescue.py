@@ -98,12 +98,13 @@ def _predict_depth_map(image_bgr: np.ndarray, depth_pipe) -> np.ndarray:
 
 def _candidate_frame_score(image_shape: tuple[int, int, int], det: ConeDetection) -> float:
     h, w = image_shape[:2]
-    x, y, bw, bh = det.bbox
+    _, _, _, bh = det.bbox
     area_ratio = det.area / max(1.0, float(h * w))
-    bottomness = det.base_center[1] / max(1.0, float(h))
+    base_ratio = det.base_center[1] / max(1.0, float(h))
+    bottomness = max(0.0, 1.0 - (abs(base_ratio - 0.80) / 0.22))
     centeredness = 1.0 - min(1.0, abs(det.centroid[0] - (w / 2.0)) / max(1.0, w / 2.0))
     height_ratio = bh / max(1.0, float(h))
-    return (area_ratio * 8.0) + (bottomness * 0.7) + (centeredness * 0.6) + (height_ratio * 2.0)
+    return (area_ratio * 8.0) + (bottomness * 0.6) + (centeredness * 0.5) + (height_ratio * 4.5)
 
 
 def _detect_depth_rescue_cones(
