@@ -577,7 +577,7 @@ def run_colmap_reconstruction(
         if progress_callback:
             progress_callback(0.2)
 
-        prefer_sequential = config.use_sequential_matching and selected_image_count > 160
+        prefer_sequential = config.use_sequential_matching and selected_image_count > 300
         if prefer_sequential:
             _run_matcher_with_fallback(
                 "sequential_matcher",

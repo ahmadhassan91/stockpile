@@ -232,6 +232,24 @@ def segment_pile(
     ground_z = _find_ground_z_ransac(pts, config)
     logger.info("Ground Z level: %.3f (RANSAC on lowest 10%%)", ground_z)
 
+    if cone_positions and len(cone_positions) >= 3:
+        cone_zs = []
+        for cone_pos in cone_positions:
+            cone_h = np.append(np.asarray(cone_pos, dtype=float), 1.0)
+            cone_zs.append(float((T @ cone_h)[2]))
+        cone_ground_z = float(np.median(cone_zs))
+        logger.info(
+            "Cone-based ground Z: %.3f m (from %d cones, RANSAC ground Z: %.3f)",
+            cone_ground_z, len(cone_zs), ground_z,
+        )
+        if abs(cone_ground_z - ground_z) > 0.5:
+            logger.warning(
+                "Cone ground Z (%.3f) and RANSAC ground Z (%.3f) disagree by %.2f m — "
+                "preferring cone-based value",
+                cone_ground_z, ground_z, abs(cone_ground_z - ground_z),
+            )
+            ground_z = cone_ground_z
+
     # Shift so ground = 0
     pts[:, 2] -= ground_z
     transformed.points = o3d.utility.Vector3dVector(pts)

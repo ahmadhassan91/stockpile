@@ -61,7 +61,11 @@ class ScaleCalibrationConfig:
     dbscan_eps: float = 0.20  # In COLMAP units, clusters trimmed cone centroids across frames
     dbscan_min_samples: int = 2
     min_cones_for_confidence: int = 3
-    projection_outlier_mad_multiplier: float = 3.5
+    projection_outlier_mad_multiplier: float = 2.5
+    min_plausible_scale: float = 0.5
+    max_plausible_scale: float = 20.0
+    max_projection_distance: float = 1.0  # COLMAP units — reject far-field samples with inflated distances
+    min_cone_pixel_height: int = 100  # reject small detections with noisy scale
     cone_position_percentile: float = 50.0
     cone_position_min_points: int = 3
     camera_height_ground_std_rel_max: float = 0.10

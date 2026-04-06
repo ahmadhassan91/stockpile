@@ -130,7 +130,7 @@ def calibrate_scale_projection(
             x, y, w, h = det.bbox
             pixel_height = h  # cone height in pixels
 
-            if pixel_height < 20:  # too small to be reliable
+            if pixel_height < config.min_cone_pixel_height:
                 continue
 
             # Find COLMAP keypoints inside the cone bbox with valid 3D points
@@ -159,10 +159,23 @@ def calibrate_scale_projection(
             if not matched_distances:
                 continue
 
+            # Reject background points that land inside the cone bbox but sit
+            # materially deeper than the cone itself in COLMAP space.
+            dists_arr = np.asarray(matched_distances, dtype=float)
+            med_dist = float(np.median(dists_arr))
+            depth_mask = dists_arr <= 2.0 * med_dist
+            if depth_mask.sum() < 1:
+                continue
+            matched_distances = list(dists_arr[depth_mask])
+            matched_positions = [p for p, keep in zip(matched_positions, depth_mask) if keep]
+
             # Use the CLOSEST keypoints — they're most likely on the cone
             # surface, not background objects that happen to project inside
             # the bounding box. Use 25th percentile for robustness.
             close_dist = np.percentile(matched_distances, 25)
+
+            if close_dist > config.max_projection_distance:
+                continue
 
             # Projection: pixel_height / focal = real_height / distance
             # real_height (in COLMAP units) = pixel_height * distance / focal
@@ -176,6 +189,9 @@ def calibrate_scale_projection(
                 percentile=config.cone_position_percentile,
                 min_points=config.cone_position_min_points,
             )
+
+            if scale < config.min_plausible_scale or scale > config.max_plausible_scale:
+                continue
 
             per_frame_scales.append(scale)
             # Store a trimmed 3D position estimate as the cone location.
@@ -224,6 +240,23 @@ def calibrate_scale_projection(
             "Many cone detections collapsed into a single 3D reference, which usually means only one cone "
             "triangulated cleanly enough for scale calibration."
         )
+
+    if len(unique_positions) >= 2:
+        dists_m = []
+        for i in range(len(unique_positions)):
+            for j in range(i + 1, len(unique_positions)):
+                d = float(np.linalg.norm(
+                    np.asarray(unique_positions[i]) - np.asarray(unique_positions[j])
+                )) * scale_factor
+                dists_m.append(d)
+        med_spacing = float(np.median(dists_m))
+        notes.append(f"Inter-cone spacing (median): {med_spacing:.1f} m")
+        if med_spacing < 1.0 or med_spacing > 200.0:
+            notes.append(
+                f"WARNING: median inter-cone distance {med_spacing:.1f} m "
+                "is outside the plausible 1-200 m range."
+            )
+            confidence *= 0.5
 
     logger.info(
         "Projection-based scale: %.4f m/unit (from %d/%d frame-cone pairs, "
