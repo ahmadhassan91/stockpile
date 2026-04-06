@@ -12,4 +12,6 @@ build/
 !tests/fixtures/*
 .streamlit/
 .venv/
-.venv/
+.DS_Store
+.playwright-cli/
+*.mp4

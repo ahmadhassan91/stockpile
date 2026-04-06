@@ -1,0 +1,59 @@
+{
+  "description": "Bundled sample replay cases for V2 benchmark work.",
+  "cases": [
+    {
+      "case_id": "aggregate_5_14_v1",
+      "video": "AGGREGATE 5-14MM V1.mp4",
+      "material": "Aggregates 5\u201314 mm",
+      "processing_profile": "standard",
+      "pair_group": "aggregate_5_14",
+      "variant_label": "V1",
+      "notes": "Bundled sample clip for 5-14 mm aggregate."
+    },
+    {
+      "case_id": "aggregate_5_14_v2",
+      "video": "AGGREGATE 5-14MM V2.mp4",
+      "material": "Aggregates 5\u201314 mm",
+      "processing_profile": "standard",
+      "pair_group": "aggregate_5_14",
+      "variant_label": "V2",
+      "notes": "Bundled sample clip for 5-14 mm aggregate."
+    },
+    {
+      "case_id": "aggregate_10_20_v1",
+      "video": "AGGREGATE 10-20MM V1.mp4",
+      "material": "Aggregates 10\u201320 mm",
+      "processing_profile": "standard",
+      "pair_group": "aggregate_10_20",
+      "variant_label": "V1",
+      "notes": "Bundled sample clip for 10-20 mm aggregate."
+    },
+    {
+      "case_id": "aggregate_10_20_v2",
+      "video": "AGGREGATE 10-20MM V2.mp4",
+      "material": "Aggregates 10\u201320 mm",
+      "processing_profile": "standard",
+      "pair_group": "aggregate_10_20",
+      "variant_label": "V2",
+      "notes": "Bundled sample clip for 10-20 mm aggregate."
+    },
+    {
+      "case_id": "backfill_0_75_v1",
+      "video": "NON-TREATED BACKFILL 0-75MM V1.mp4",
+      "material": "Backfill 0\u201375 mm",
+      "processing_profile": "standard",
+      "pair_group": "backfill_0_75",
+      "variant_label": "V1",
+      "notes": "Bundled sample clip for 0-75 mm backfill."
+    },
+    {
+      "case_id": "backfill_0_75_v2",
+      "video": "NON-TREATED BACKFILL 0-75MM V2.mp4",
+      "material": "Backfill 0\u201375 mm",
+      "processing_profile": "standard",
+      "pair_group": "backfill_0_75",
+      "variant_label": "V2",
+      "notes": "Bundled sample clip for 0-75 mm backfill."
+    }
+  ]
+}
