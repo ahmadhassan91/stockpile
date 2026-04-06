@@ -17,7 +17,7 @@ import cv2
 import numpy as np
 from PIL import Image
 
-from .cone_detection import ConeDetection, detect_cones, draw_cone_overlays
+from .cone_detection import ConeDetection, create_red_mask, detect_cones, draw_cone_overlays
 from .config import ConeDetectionConfig, FrameExtractionConfig
 from .frame_extraction import extract_frames
 
@@ -106,6 +106,65 @@ def _candidate_frame_score(image_shape: tuple[int, int, int], det: ConeDetection
     return (area_ratio * 8.0) + (bottomness * 0.7) + (centeredness * 0.6) + (height_ratio * 2.0)
 
 
+def _detect_depth_rescue_cones(
+    image_bgr: np.ndarray,
+    cone_detection_config: ConeDetectionConfig,
+) -> list[ConeDetection]:
+    """Experimental cone detector tuned for a single clear reference cone.
+
+    The production detector intentionally merges red+white cone parts, but that
+    can over-merge into bright aggregate regions for the rescue path. Here we
+    use the red mask only and keep the geometry constraints much tighter.
+    """
+    h, w = image_bgr.shape[:2]
+    mask = create_red_mask(image_bgr, cone_detection_config)
+    contours, _ = cv2.findContours(mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+
+    detections: list[ConeDetection] = []
+    for contour in contours:
+        area = float(cv2.contourArea(contour))
+        if area < 120 or area > (h * w * 0.04):
+            continue
+
+        x, y, bw, bh = cv2.boundingRect(contour)
+        if bw <= 0 or bh <= 0:
+            continue
+        aspect_ratio = bh / max(1.0, float(bw))
+        if aspect_ratio < 1.1 or aspect_ratio > 5.5:
+            continue
+        if bh < h * 0.03 or bh > h * 0.35:
+            continue
+        if bw > w * 0.12:
+            continue
+        if (y + bh) < h * 0.45:
+            continue
+
+        hull = cv2.convexHull(contour)
+        hull_area = float(cv2.contourArea(hull))
+        solidity = area / hull_area if hull_area > 0 else 0.0
+        if solidity < 0.35:
+            continue
+
+        moments = cv2.moments(contour)
+        if moments["m00"] == 0:
+            continue
+        cx = moments["m10"] / moments["m00"]
+        cy = moments["m01"] / moments["m00"]
+        detections.append(
+            ConeDetection(
+                bbox=(x, y, bw, bh),
+                centroid=(cx, cy),
+                tip=(float(x + bw / 2), float(y)),
+                base_center=(float(x + bw / 2), float(y + bh)),
+                area=area,
+                solidity=solidity,
+                contour=contour,
+            )
+        )
+
+    return detections
+
+
 def select_best_depth_frame(
     frame_paths: list[Path],
     cone_detection_config: ConeDetectionConfig | None = None,
@@ -118,7 +177,9 @@ def select_best_depth_frame(
         image = cv2.imread(str(path))
         if image is None:
             continue
-        detections = detect_cones(image, cone_detection_config)
+        detections = _detect_depth_rescue_cones(image, cone_detection_config)
+        if not detections:
+            detections = detect_cones(image, cone_detection_config)
         if not detections:
             continue
         det = max(detections, key=lambda d: _candidate_frame_score(image.shape, d))
