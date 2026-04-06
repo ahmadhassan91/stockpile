@@ -3,9 +3,11 @@
 import logging
 import os
 import re
+import signal
 import sqlite3
 import struct
 import subprocess
+import time
 from collections import namedtuple
 from pathlib import Path
 
@@ -118,12 +120,44 @@ def _run_colmap_command(
 ) -> subprocess.CompletedProcess[str]:
     """Run a COLMAP command and persist stdout/stderr for debugging."""
     logger.info("Running COLMAP step %s: %s", step_name, " ".join(cmd))
-    result = subprocess.run(
+    process = subprocess.Popen(
         cmd,
-        capture_output=True,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
         text=True,
-        timeout=timeout,
         env={**os.environ, "QT_QPA_PLATFORM": "offscreen"},
+        start_new_session=True,
+    )
+    stdout_text = ""
+    stderr_text = ""
+    try:
+        stdout_text, stderr_text = process.communicate(timeout=timeout)
+    except subprocess.TimeoutExpired as exc:
+        stdout_text = exc.output or ""
+        stderr_text = exc.stderr or ""
+        if stdout_text:
+            (workspace_dir / f"{step_name}.stdout.log").write_text(stdout_text)
+        if stderr_text:
+            (workspace_dir / f"{step_name}.stderr.log").write_text(stderr_text)
+        logger.error(
+            "COLMAP step %s exceeded %ss; terminating process tree and workspace-specific stragglers.",
+            step_name,
+            timeout,
+        )
+        _terminate_process_group(process, grace_seconds=5.0)
+        _cleanup_lingering_workspace_processes(cmd, current_pid=os.getpid())
+        raise subprocess.TimeoutExpired(
+            cmd=cmd,
+            timeout=timeout,
+            output=stdout_text,
+            stderr=stderr_text,
+        ) from None
+
+    result = subprocess.CompletedProcess(
+        args=cmd,
+        returncode=process.returncode,
+        stdout=stdout_text,
+        stderr=stderr_text,
     )
 
     if result.stdout:
@@ -137,6 +171,123 @@ def _run_colmap_command(
         raise RuntimeError(f"COLMAP {step_name} failed with return code {result.returncode}")
 
     return result
+
+
+def _terminate_process_group(process: subprocess.Popen[str], grace_seconds: float = 5.0) -> None:
+    """Terminate a subprocess and its process group as aggressively as needed."""
+    if process.poll() is not None:
+        return
+
+    try:
+        os.killpg(process.pid, signal.SIGTERM)
+    except ProcessLookupError:
+        return
+    except Exception:
+        process.terminate()
+
+    deadline = time.time() + max(0.1, float(grace_seconds))
+    while process.poll() is None and time.time() < deadline:
+        time.sleep(0.1)
+
+    if process.poll() is not None:
+        return
+
+    try:
+        os.killpg(process.pid, signal.SIGKILL)
+    except ProcessLookupError:
+        return
+    except Exception:
+        process.kill()
+
+    deadline = time.time() + 2.0
+    while process.poll() is None and time.time() < deadline:
+        time.sleep(0.1)
+
+
+def _cleanup_markers_for_command(cmd: list[str]) -> set[str]:
+    """Extract unique path markers that identify lingering step-specific processes."""
+    markers: set[str] = set()
+    for arg in cmd[1:]:
+        if not isinstance(arg, str):
+            continue
+        candidate = arg.strip()
+        if not candidate or candidate.startswith("--"):
+            continue
+        if "/" not in candidate and "\\" not in candidate:
+            continue
+        markers.add(candidate)
+        normalized = candidate.replace("\\", "/")
+        if "/data/" in normalized:
+            suffix = normalized.split("/data/", 1)[1]
+            markers.add(f"/data/{suffix}")
+    return {marker for marker in markers if len(marker) >= 12}
+
+
+def _matching_process_ids(markers: set[str], *, current_pid: int | None = None) -> list[int]:
+    """Return process ids whose command lines contain any of the provided markers."""
+    if not markers:
+        return []
+    try:
+        result = subprocess.run(
+            ["ps", "-eo", "pid=,args="],
+            capture_output=True,
+            text=True,
+            timeout=10,
+        )
+    except Exception:
+        return []
+    if result.returncode != 0:
+        return []
+
+    blocked_pids = {os.getpid()}
+    if current_pid is not None:
+        blocked_pids.add(int(current_pid))
+
+    matches: list[int] = []
+    for line in result.stdout.splitlines():
+        line = line.strip()
+        if not line:
+            continue
+        pid_text, _, args = line.partition(" ")
+        try:
+            pid = int(pid_text)
+        except ValueError:
+            continue
+        if pid in blocked_pids or not args:
+            continue
+        if any(marker in args for marker in markers):
+            matches.append(pid)
+    return matches
+
+
+def _signal_processes(process_ids: list[int], sig: int) -> None:
+    """Best-effort signal dispatch for a batch of process ids."""
+    for pid in process_ids:
+        try:
+            os.kill(pid, sig)
+        except ProcessLookupError:
+            continue
+        except Exception:
+            continue
+
+
+def _cleanup_lingering_workspace_processes(cmd: list[str], *, current_pid: int | None = None) -> None:
+    """Kill any lingering workspace-scoped processes that outlived the main timeout."""
+    markers = _cleanup_markers_for_command(cmd)
+    if not markers:
+        return
+
+    process_ids = _matching_process_ids(markers, current_pid=current_pid)
+    if not process_ids:
+        return
+
+    logger.warning("Killing lingering COLMAP-related processes for markers: %s", sorted(markers))
+    _signal_processes(process_ids, signal.SIGTERM)
+    time.sleep(1.0)
+
+    remaining = _matching_process_ids(markers, current_pid=current_pid)
+    if remaining:
+        _signal_processes(remaining, signal.SIGKILL)
 
 
 def _count_database_geometric_matches(database_path: Path) -> int:

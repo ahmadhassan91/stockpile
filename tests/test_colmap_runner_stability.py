@@ -1,7 +1,12 @@
 from __future__ import annotations
 
 import sqlite3
+import subprocess
+import sys
+import time
 from pathlib import Path
+
+import pytest
 
 from stockpile.colmap_runner import (
     _COLMAP_PAIR_ID_PRIME,
@@ -9,6 +14,7 @@ from stockpile.colmap_runner import (
     _count_database_geometric_matches,
     _decode_colmap_pair_id,
     _is_unsuitable_init_pair_failure,
+    _run_colmap_command,
 )
 
 
@@ -177,3 +183,36 @@ def test_is_unsuitable_init_pair_failure_false_for_other_errors(tmp_path):
         "Could not open /path/to/project.ini\n"
     )
     assert not _is_unsuitable_init_pair_failure(tmp_path, "mapper")
+
+
+def test_run_colmap_command_kills_detached_children_on_timeout(tmp_path):
+    marker_path = tmp_path / "timeout-marker.db"
+    script_path = tmp_path / "spawn_detached.py"
+    script_path.write_text(
+        "import subprocess\n"
+        "import sys\n"
+        "import time\n"
+        "marker = sys.argv[1]\n"
+        "subprocess.Popen(\n"
+        "    [sys.executable, '-c', 'import time; time.sleep(30)', marker],\n"
+        "    start_new_session=True,\n"
+        ")\n"
+        "time.sleep(30)\n"
+    )
+
+    with pytest.raises(subprocess.TimeoutExpired):
+        _run_colmap_command(
+            [sys.executable, str(script_path), str(marker_path)],
+            tmp_path,
+            "timeout_cleanup",
+            timeout=1,
+        )
+
+    time.sleep(0.5)
+    process_listing = subprocess.run(
+        ["ps", "-eo", "pid=,args="],
+        capture_output=True,
+        text=True,
+        timeout=10,
+    )
+    assert str(marker_path) not in process_listing.stdout
