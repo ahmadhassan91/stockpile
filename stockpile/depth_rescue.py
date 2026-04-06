@@ -17,7 +17,7 @@ import cv2
 import numpy as np
 from PIL import Image
 
-from .cone_detection import ConeDetection, create_red_mask, detect_cones, draw_cone_overlays
+from .cone_detection import ConeDetection, create_red_mask, draw_cone_overlays
 from .config import ConeDetectionConfig, FrameExtractionConfig
 from .frame_extraction import extract_frames
 
@@ -178,8 +178,6 @@ def select_best_depth_frame(
         if image is None:
             continue
         detections = _detect_depth_rescue_cones(image, cone_detection_config)
-        if not detections:
-            detections = detect_cones(image, cone_detection_config)
         if not detections:
             continue
         det = max(detections, key=lambda d: _candidate_frame_score(image.shape, d))
