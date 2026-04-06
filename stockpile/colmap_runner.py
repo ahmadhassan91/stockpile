@@ -635,9 +635,10 @@ def run_colmap_reconstruction(
             "--Mapper.random_seed", str(random_seed),
             "--Mapper.num_threads", str(config.mapper_num_threads),
             "--Mapper.multiple_models", "0",
-            "--Mapper.min_model_size", "5",
+            "--Mapper.min_model_size", "3",
             "--Mapper.init_num_trials", str(config.mapper_init_num_trials),
             "--Mapper.max_runtime_seconds", str(config.mapper_max_runtime_seconds),
+            "--Mapper.init_min_num_inliers", str(config.mapper_init_min_num_inliers),
             "--Mapper.ba_use_gpu", "1" if config.use_gpu else "0",
         ]
         mapper_timeout_seconds = max(120, int(config.mapper_max_runtime_seconds) + 90)
