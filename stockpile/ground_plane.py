@@ -182,9 +182,43 @@ def segment_pile(
     inlier_ratio = len(inliers) / len(cleaned.points)
     pts = np.asarray(transformed.points)
 
-    # 3. Find TRUE ground level via RANSAC on lowest-Z cluster
-    ground_z = _find_ground_z_ransac(pts, config)
-    logger.info("Ground Z level: %.3f (RANSAC on lowest 10%%)", ground_z)
+    # 3. Find TRUE ground level — prefer cone positions when available,
+    #    since cones sit on the ground and are the most direct reference.
+    cone_ground_z = None
+    if cone_positions and len(cone_positions) >= 3:
+        transformed_cone_z = []
+        for cp in cone_positions:
+            p = np.append(cp, 1.0)
+            transformed_cone_z.append(float((T @ p)[2]))
+        cone_ground_z = float(np.median(transformed_cone_z))
+        logger.info(
+            "Cone-based ground Z: %.3f (from %d cones, range %.3f–%.3f)",
+            cone_ground_z,
+            len(transformed_cone_z),
+            min(transformed_cone_z),
+            max(transformed_cone_z),
+        )
+
+    ransac_ground_z = _find_ground_z_ransac(pts, config)
+
+    if cone_ground_z is not None:
+        ground_z = cone_ground_z
+        delta = abs(cone_ground_z - ransac_ground_z)
+        if delta > 0.5:
+            logger.warning(
+                "Cone-based ground Z (%.3f) and RANSAC ground Z (%.3f) disagree by %.2f m; "
+                "using cone-based value as cones are placed on actual ground.",
+                cone_ground_z, ransac_ground_z, delta,
+            )
+        else:
+            logger.info(
+                "Cone and RANSAC ground Z agree within %.2f m (cone=%.3f, ransac=%.3f)",
+                delta, cone_ground_z, ransac_ground_z,
+            )
+    else:
+        ground_z = ransac_ground_z
+    logger.info("Ground Z level: %.3f (%s)", ground_z,
+                "cone-based" if cone_ground_z is not None else "RANSAC on lowest 10%")
 
     # Shift so ground = 0
     pts[:, 2] -= ground_z

@@ -48,6 +48,9 @@ class ScaleCalibrationConfig:
     dbscan_eps: float = 0.5  # In COLMAP units, tuned during calibration
     dbscan_min_samples: int = 3
     min_cones_for_confidence: int = 3
+    projection_outlier_mad_multiplier: float = 2.5  # MAD-based outlier rejection
+    min_plausible_scale: float = 0.5   # Hard lower bound on per-detection scale
+    max_plausible_scale: float = 20.0  # Hard upper bound on per-detection scale
 
 
 @dataclass

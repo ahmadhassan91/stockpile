@@ -1,7 +1,7 @@
 """Scale calibration: compute real-world scale from cone detections + COLMAP data."""
 
 import logging
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 
 import numpy as np
 
@@ -19,6 +19,7 @@ class CalibrationResult:
     num_cones_used: int
     per_cone_scales: list[float]
     cone_3d_positions: list[np.ndarray]
+    notes: list[str] = field(default_factory=list)
 
 
 def _qvec_to_rotmat(qvec: np.ndarray) -> np.ndarray:
@@ -35,6 +36,23 @@ def _camera_center(image: ColmapImage) -> np.ndarray:
     """Get camera center in world coordinates: C = -R^T @ t."""
     R = _qvec_to_rotmat(image.qvec)
     return -R.T @ image.tvec
+
+
+def _mad_inlier_mask(values: np.ndarray, mad_multiplier: float) -> np.ndarray:
+    """Return a robust inlier mask using median absolute deviation."""
+    if len(values) < 5:
+        return np.ones(len(values), dtype=bool)
+
+    median = float(np.median(values))
+    mad = float(np.median(np.abs(values - median)))
+    if mad < 1e-9:
+        return np.ones(len(values), dtype=bool)
+
+    robust_z = 0.6745 * (values - median) / mad
+    mask = np.abs(robust_z) <= mad_multiplier
+    if int(mask.sum()) < 3:
+        return np.ones(len(values), dtype=bool)
+    return mask
 
 
 def calibrate_scale_projection(
@@ -106,6 +124,18 @@ def calibrate_scale_projection(
             if not matched_distances:
                 continue
 
+            # --- Depth-filter: remove background 3D points that project
+            # inside the cone bbox but are much farther than the cone ---
+            dists_arr = np.asarray(matched_distances, dtype=float)
+            pos_arr = np.asarray(matched_positions, dtype=float)
+            med_dist = float(np.median(dists_arr))
+            depth_mask = dists_arr <= 2.0 * med_dist
+            if depth_mask.sum() >= 1:
+                dists_arr = dists_arr[depth_mask]
+                pos_arr = pos_arr[depth_mask]
+                matched_distances = dists_arr.tolist()
+                matched_positions = [pos_arr[i] for i in range(len(pos_arr))]
+
             # Use the CLOSEST keypoints — they're most likely on the cone
             # surface, not background objects that happen to project inside
             # the bounding box. Use 25th percentile for robustness.
@@ -117,6 +147,10 @@ def calibrate_scale_projection(
             real_height_colmap = pixel_height * close_dist / focal
             scale = config.known_cone_height_m / real_height_colmap
 
+            # Hard plausibility bounds — reject wildly wrong per-detection scales
+            if scale < config.min_plausible_scale or scale > config.max_plausible_scale:
+                continue
+
             per_frame_scales.append(scale)
             # Store median 3D position as cone location
             cone_positions.append(np.median(matched_positions, axis=0))
@@ -124,34 +158,75 @@ def calibrate_scale_projection(
     if not per_frame_scales:
         raise ValueError("No cone-camera projection matches found for calibration")
 
+    raw_scales = np.asarray(per_frame_scales, dtype=float)
+    notes: list[str] = []
+
+    # MAD-based outlier rejection
+    inlier_mask = _mad_inlier_mask(raw_scales, config.projection_outlier_mad_multiplier)
+    if not np.all(inlier_mask):
+        dropped = int((~inlier_mask).sum())
+        notes.append(f"Discarded {dropped} projection scale outlier(s) via MAD filtering.")
+        logger.info(
+            "Projection scale MAD trimming removed %d / %d outlier samples",
+            dropped, len(raw_scales),
+        )
+    filtered_scales = raw_scales[inlier_mask]
+    filtered_positions = [cone_positions[i] for i in range(len(cone_positions)) if inlier_mask[i]]
+
     # Use median across all frames for robustness
-    scale_factor = float(np.median(per_frame_scales))
+    scale_factor = float(np.median(filtered_scales))
 
     # Confidence based on consistency and sample count
-    if len(per_frame_scales) >= 3:
-        cv = np.std(per_frame_scales) / np.mean(per_frame_scales)
+    if len(filtered_scales) >= 3:
+        cv = np.std(filtered_scales) / np.mean(filtered_scales)
         consistency = max(0.0, 1.0 - cv)
     else:
         consistency = 0.5
 
-    count_factor = min(1.0, len(per_frame_scales) / 10)  # more frames = more confident
-    confidence = consistency * count_factor
+    count_factor = min(1.0, len(filtered_scales) / 10)  # more frames = more confident
+    retention_factor = len(filtered_scales) / len(raw_scales)
+    confidence = consistency * count_factor * retention_factor
 
     # Deduplicate cone positions (cluster nearby ones)
-    unique_positions = _deduplicate_positions(cone_positions, threshold=np.median(per_frame_scales) * 0.5)
+    unique_positions = _deduplicate_positions(filtered_positions, threshold=scale_factor * 0.5)
+
+    # --- Inter-cone distance cross-check ---
+    if len(unique_positions) >= 2:
+        pairwise_dists_colmap = []
+        for i in range(len(unique_positions)):
+            for j in range(i + 1, len(unique_positions)):
+                d = float(np.linalg.norm(
+                    np.asarray(unique_positions[i]) - np.asarray(unique_positions[j])
+                ))
+                if d > 1e-6:
+                    pairwise_dists_colmap.append(d)
+
+        if pairwise_dists_colmap:
+            median_pair_colmap = float(np.median(pairwise_dists_colmap))
+            median_pair_m = median_pair_colmap * scale_factor
+            notes.append(
+                f"Inter-cone spacing: {median_pair_m:.1f} m at projection scale "
+                f"({len(pairwise_dists_colmap)} pair(s) from {len(unique_positions)} cones)."
+            )
+            if median_pair_m < 0.5 or median_pair_m > 100.0:
+                notes.append(
+                    f"WARNING: Inter-cone spacing {median_pair_m:.1f} m is outside "
+                    "plausible range [0.5, 100] m — possible scale error."
+                )
 
     logger.info(
-        "Projection-based scale: %.4f m/unit (from %d frame-cone pairs, "
+        "Projection-based scale: %.4f m/unit (from %d/%d frame-cone pairs, "
         "%d unique cones, confidence=%.2f)",
-        scale_factor, len(per_frame_scales), len(unique_positions), confidence,
+        scale_factor, len(filtered_scales), len(raw_scales), len(unique_positions), confidence,
     )
 
     return CalibrationResult(
         scale_factor=scale_factor,
         confidence=confidence,
         num_cones_used=len(unique_positions),
-        per_cone_scales=per_frame_scales,
+        per_cone_scales=list(filtered_scales),
         cone_3d_positions=unique_positions,
+        notes=notes,
     )
 
 
