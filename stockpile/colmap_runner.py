@@ -133,12 +133,8 @@ def _run_colmap_command(
     try:
         stdout_text, stderr_text = process.communicate(timeout=timeout)
     except subprocess.TimeoutExpired as exc:
-        stdout_text = exc.output or ""
-        stderr_text = exc.stderr or ""
-        if stdout_text:
-            (workspace_dir / f"{step_name}.stdout.log").write_text(stdout_text)
-        if stderr_text:
-            (workspace_dir / f"{step_name}.stderr.log").write_text(stderr_text)
+        stdout_text = _coerce_subprocess_text(exc.output)
+        stderr_text = _coerce_subprocess_text(exc.stderr)
         logger.error(
             "COLMAP step %s exceeded %ss; terminating process tree and workspace-specific stragglers.",
             step_name,
@@ -146,6 +142,10 @@ def _run_colmap_command(
         )
         _terminate_process_group(process, grace_seconds=5.0)
         _cleanup_lingering_workspace_processes(cmd, current_pid=os.getpid())
+        if stdout_text:
+            (workspace_dir / f"{step_name}.stdout.log").write_text(stdout_text)
+        if stderr_text:
+            (workspace_dir / f"{step_name}.stderr.log").write_text(stderr_text)
         raise subprocess.TimeoutExpired(
             cmd=cmd,
             timeout=timeout,
@@ -171,6 +171,15 @@ def _run_colmap_command(
         raise RuntimeError(f"COLMAP {step_name} failed with return code {result.returncode}")
 
     return result
+
+
+def _coerce_subprocess_text(value: str | bytes | None) -> str:
+    """Normalize subprocess output values to text for logging and errors."""
+    if value is None:
+        return ""
+    if isinstance(value, bytes):
+        return value.decode("utf-8", errors="replace")
+    return str(value)
 
 
 def _terminate_process_group(process: subprocess.Popen[str], grace_seconds: float = 5.0) -> None:
