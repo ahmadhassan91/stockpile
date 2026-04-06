@@ -39,6 +39,7 @@ def init_session_state():
         "_video_info": None,
         "progress_queue": None,
         "pipeline_thread": None,
+        "processing_lock_token": None,
         CLIENT_SESSION_ID_KEY: None,
         CLIENT_UPLOAD_ID_KEY: None,
         CLIENT_RUN_ID_KEY: None,

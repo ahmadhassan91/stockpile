@@ -26,10 +26,19 @@ from components.parameter_sidebar import (
 from components.persisted_session import clear_session_snapshot, persist_session_snapshot
 from components.pipeline_presets import build_recommended_sidebar_overrides
 from components.reliability_status import classify_preflight_status, render_status_callout
+from components.run_guard import describe_active_run, read_active_run_lock
 from components.session_init import init_session_state
 
 init_session_state()
 st.header("1. Upload Video")
+
+active_run = read_active_run_lock()
+if active_run is not None:
+    st.info(
+        "Processing capacity is currently busy. "
+        + describe_active_run(active_run)
+        + " You can still review this upload while the current reconstruction finishes."
+    )
 
 PRESET_NAMES = list(DENSITY_PRESETS.keys())
 SETTING_KEY_MAP = {
@@ -658,6 +667,11 @@ if uploaded is not None:
         col_banner, col_change = st.columns([4, 1])
         with col_banner:
             render_settings_summary(preflight_status=preflight_status)
+            if preflight_status.key == "retake_needed":
+                st.error(
+                    "Client-facing safe mode will block this upload before reconstruction starts. "
+                    "Please improve the capture before moving to Processing."
+                )
         with col_change:
             if st.button("✏️ Change", use_container_width=True, key="change_settings_review_btn"):
                 seed_settings_dialog_from_sidebar(force=True)

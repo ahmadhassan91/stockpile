@@ -27,10 +27,28 @@ from stockpile.pipeline import Pipeline, PipelineResult
 
 import sys
 sys.path.insert(0, str(Path(__file__).parent.parent))
-from components.client_test_log import append_client_test_event, start_new_run_tracking
+from components.client_test_log import (
+    CLIENT_RUN_ATTEMPT_KEY,
+    CLIENT_RUN_ID_KEY,
+    CLIENT_SESSION_ID_KEY,
+    CLIENT_UPLOAD_ID_KEY,
+    append_client_test_event,
+    start_new_run_tracking,
+)
 from components.parameter_sidebar import SIDEBAR_SETTING_KEYS
 from components.persisted_session import clear_session_snapshot, persist_session_snapshot
-from components.reliability_status import classify_result_status, render_status_callout
+from components.reliability_status import (
+    classify_preflight_status,
+    classify_result_status,
+    render_status_callout,
+)
+from components.run_guard import (
+    describe_active_run,
+    heartbeat_run_lock,
+    read_active_run_lock,
+    release_run_lock,
+    try_acquire_run_lock,
+)
 from components.session_init import init_session_state
 
 init_session_state()
@@ -47,15 +65,43 @@ STAGE_LABELS = {
 }
 
 
-def run_pipeline_thread(video_path: str, config: PipelineConfig, queue: Queue):
+def run_pipeline_thread(video_path: str, config: PipelineConfig, queue: Queue, lock_token: str | None):
     """Run the pipeline in a background thread, posting progress to queue."""
+    heartbeat_stop = threading.Event()
+    heartbeat_state = {
+        "stage": "starting",
+        "progress": 0.0,
+        "message": "Preparing processing workspace...",
+    }
+
+    def heartbeat_loop():
+        while not heartbeat_stop.wait(10.0):
+            heartbeat_run_lock(
+                lock_token,
+                stage=heartbeat_state["stage"],
+                progress=heartbeat_state["progress"],
+                message=heartbeat_state["message"],
+            )
+
     def progress_callback(stage, progress, message=""):
+        heartbeat_state["stage"] = stage
+        heartbeat_state["progress"] = progress
+        heartbeat_state["message"] = message
+        heartbeat_run_lock(lock_token, stage=stage, progress=progress, message=message)
         queue.put(("progress", stage, progress, message))
 
     config.progress_callback = progress_callback
-    pipeline = Pipeline(config)
-    result = pipeline.run(video_path)
-    queue.put(("done", result))
+    heartbeat_thread = threading.Thread(target=heartbeat_loop, daemon=True)
+    heartbeat_thread.start()
+    heartbeat_run_lock(lock_token, stage="starting", progress=0.0, message="Starting reconstruction...")
+    try:
+        pipeline = Pipeline(config)
+        result = pipeline.run(video_path)
+        queue.put(("done", result))
+    finally:
+        heartbeat_stop.set()
+        heartbeat_thread.join(timeout=1.0)
+        release_run_lock(lock_token)
 
 
 if st.session_state.get("video_path") is None:
@@ -94,6 +140,19 @@ else:
     manual_scale = st.session_state.get("manual_scale_override")
     config.manual_scale_override = manual_scale
 
+if not st.session_state.get("pipeline_running") and st.session_state.get("processing_lock_token"):
+    release_run_lock(st.session_state.get("processing_lock_token"))
+    st.session_state["processing_lock_token"] = None
+
+preflight_status = classify_preflight_status(
+    st.session_state.get("ai_preflight_result"),
+    st.session_state.get("_cone_detections"),
+    st.session_state.get("recommended_processing_profile"),
+)
+active_run = read_active_run_lock()
+own_lock_token = st.session_state.get("processing_lock_token")
+other_active_run = active_run is not None and active_run.token != own_lock_token
+
 # Show current settings
 with st.expander("Current Settings"):
     st.write(f"- **Material**: {config.material_name} ({config.material_density:.0f} kg/m³)")
@@ -108,37 +167,98 @@ with st.expander("Current Settings"):
     if config.manual_scale_override is not None:
         st.write(f"- **Manual scale override**: {config.manual_scale_override:.4f} m/unit")
 
+render_status_callout(
+    preflight_status,
+    prefix="**Capture preflight.** This is the trust level before the full reconstruction starts.",
+)
+if preflight_status.key == "retake_needed":
+    st.error(
+        "Client-facing safe mode is blocking this run before reconstruction. "
+        "Please upload a stronger clip or re-capture with clearer references and perimeter coverage."
+    )
+elif other_active_run:
+    st.info(
+        "Processing is temporarily busy. "
+        + describe_active_run(active_run)
+        + " We only allow one heavy reconstruction at a time so client sessions do not interfere with each other."
+    )
+
 # Run button
 result = st.session_state.get("pipeline_result")
 run_button_label = "Start Processing" if result is None else "Run Again"
 if not st.session_state.get("pipeline_running", False):
     if st.button(run_button_label, type="primary", use_container_width=True):
-        st.session_state.pipeline_running = True
-        st.session_state.pipeline_result = None
-        st.session_state.progress_queue = None
-        st.session_state.pipeline_thread = None
         start_new_run_tracking(st.session_state)
-        append_client_test_event(
-            st.session_state,
-            "processing_started",
-            config=config,
-            video_info=st.session_state.get("_video_info"),
-            detections=st.session_state.get("_cone_detections"),
-            extra={"config_source": config_source},
-        )
-        clear_session_snapshot(config.workspace)
+        if preflight_status.key == "retake_needed":
+            append_client_test_event(
+                st.session_state,
+                "processing_blocked_preflight",
+                config=config,
+                video_info=st.session_state.get("_video_info"),
+                detections=st.session_state.get("_cone_detections"),
+                extra={"config_source": config_source, "preflight_status": preflight_status.key},
+            )
+            st.error(
+                "This upload is blocked in client-facing safe mode. Please fix the capture quality before processing."
+            )
+        else:
+            acquisition = try_acquire_run_lock(
+                session_id=st.session_state.get(CLIENT_SESSION_ID_KEY),
+                upload_id=st.session_state.get(CLIENT_UPLOAD_ID_KEY),
+                run_id=st.session_state.get(CLIENT_RUN_ID_KEY),
+                run_attempt=st.session_state.get(CLIENT_RUN_ATTEMPT_KEY, 0),
+                file_name=st.session_state.get("last_uploaded_name"),
+                stage="queued",
+                message="Waiting to start reconstruction...",
+            )
+            if not acquisition.acquired:
+                append_client_test_event(
+                    st.session_state,
+                    "processing_blocked_busy",
+                    config=config,
+                    video_info=st.session_state.get("_video_info"),
+                    detections=st.session_state.get("_cone_detections"),
+                    extra={
+                        "config_source": config_source,
+                        "active_run": acquisition.active_run.to_payload() if acquisition.active_run else None,
+                        "stale_lock_cleared": acquisition.stale_cleared,
+                    },
+                )
+                st.warning(
+                    "Another client run is already in progress. "
+                    + describe_active_run(acquisition.active_run)
+                )
+            else:
+                st.session_state.pipeline_running = True
+                st.session_state.pipeline_result = None
+                st.session_state.progress_queue = None
+                st.session_state.pipeline_thread = None
+                st.session_state["processing_lock_token"] = acquisition.token
+                append_client_test_event(
+                    st.session_state,
+                    "processing_started",
+                    config=config,
+                    video_info=st.session_state.get("_video_info"),
+                    detections=st.session_state.get("_cone_detections"),
+                    extra={
+                        "config_source": config_source,
+                        "lock_token": acquisition.token,
+                        "stale_lock_cleared": acquisition.stale_cleared,
+                    },
+                )
+                clear_session_snapshot(config.workspace)
 
-        queue = Queue()
-        st.session_state.progress_queue = queue
+                queue = Queue()
+                st.session_state.progress_queue = queue
 
-        thread = threading.Thread(
-            target=run_pipeline_thread,
-            args=(st.session_state.video_path, config, queue),
-            daemon=True,
-        )
-        thread.start()
-        st.session_state.pipeline_thread = thread
-        st.rerun()
+                thread = threading.Thread(
+                    target=run_pipeline_thread,
+                    args=(st.session_state.video_path, config, queue, acquisition.token),
+                    daemon=True,
+                )
+                thread.start()
+                st.session_state.pipeline_thread = thread
+                st.rerun()
 
 # Progress display
 if st.session_state.get("pipeline_running", False):
@@ -180,6 +300,8 @@ if st.session_state.get("pipeline_running", False):
                     st.session_state.pipeline_running = False
                     st.session_state.progress_queue = None
                     st.session_state.pipeline_thread = None
+                    release_run_lock(st.session_state.get("processing_lock_token"))
+                    st.session_state["processing_lock_token"] = None
                     persist_session_snapshot(st.session_state, result=result, config=config)
                     append_client_test_event(
                         st.session_state,
@@ -211,6 +333,8 @@ if st.session_state.get("pipeline_running", False):
                 st.session_state.pipeline_running = False
                 st.session_state.progress_queue = None
                 st.session_state.pipeline_thread = None
+                release_run_lock(st.session_state.get("processing_lock_token"))
+                st.session_state["processing_lock_token"] = None
                 if st.session_state.pipeline_result is None:
                     st.error("Pipeline thread ended unexpectedly")
                 st.rerun()
