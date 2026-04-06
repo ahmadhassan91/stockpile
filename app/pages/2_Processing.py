@@ -98,6 +98,8 @@ def run_pipeline_thread(video_path: str, config: PipelineConfig, queue: Queue, l
         pipeline = Pipeline(config)
         result = pipeline.run(video_path)
         queue.put(("done", result))
+    except Exception as exc:
+        queue.put(("error", str(exc)))
     finally:
         heartbeat_stop.set()
         heartbeat_thread.join(timeout=1.0)
@@ -320,6 +322,24 @@ if st.session_state.get("pipeline_running", False):
                         st.success("Processing complete! Go to the Results page.")
                     st.rerun()
 
+                elif msg[0] == "error":
+                    error_msg = msg[1]
+                    st.session_state.pipeline_running = False
+                    st.session_state.progress_queue = None
+                    st.session_state.pipeline_thread = None
+                    release_run_lock(st.session_state.get("processing_lock_token"))
+                    st.session_state["processing_lock_token"] = None
+                    append_client_test_event(
+                        st.session_state,
+                        "processing_crashed",
+                        config=config,
+                        video_info=st.session_state.get("_video_info"),
+                        detections=st.session_state.get("_cone_detections"),
+                        extra={"config_source": config_source, "error": error_msg},
+                    )
+                    st.error(f"Pipeline crashed: {error_msg}")
+                    st.rerun()
+
         except Exception:
             pass
 
@@ -336,6 +356,14 @@ if st.session_state.get("pipeline_running", False):
                 release_run_lock(st.session_state.get("processing_lock_token"))
                 st.session_state["processing_lock_token"] = None
                 if st.session_state.pipeline_result is None:
+                    append_client_test_event(
+                        st.session_state,
+                        "processing_crashed",
+                        config=config,
+                        video_info=st.session_state.get("_video_info"),
+                        detections=st.session_state.get("_cone_detections"),
+                        extra={"config_source": config_source, "error": "Pipeline thread ended unexpectedly"},
+                    )
                     st.error("Pipeline thread ended unexpectedly")
                 st.rerun()
             break
