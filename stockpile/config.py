@@ -51,6 +51,8 @@ class ScaleCalibrationConfig:
     projection_outlier_mad_multiplier: float = 2.5  # MAD-based outlier rejection
     min_plausible_scale: float = 0.5   # Hard lower bound on per-detection scale
     max_plausible_scale: float = 20.0  # Hard upper bound on per-detection scale
+    max_projection_distance: float = 1.0  # COLMAP units; reject far-field samples with inflated distances
+    min_cone_pixel_height: int = 100  # reject small detections with noisy scale
 
 
 @dataclass

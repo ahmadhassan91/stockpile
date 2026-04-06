@@ -95,7 +95,7 @@ def calibrate_scale_projection(
             x, y, w, h = det.bbox
             pixel_height = h  # cone height in pixels
 
-            if pixel_height < 20:  # too small to be reliable
+            if pixel_height < config.min_cone_pixel_height:
                 continue
 
             # Find COLMAP keypoints inside the cone bbox with valid 3D points
@@ -140,6 +140,11 @@ def calibrate_scale_projection(
             # surface, not background objects that happen to project inside
             # the bounding box. Use 25th percentile for robustness.
             close_dist = np.percentile(matched_distances, 25)
+
+            # Distance cap: reject far-field observations where COLMAP
+            # overestimates 3D distances, dragging scale down.
+            if close_dist > config.max_projection_distance:
+                continue
 
             # Projection: pixel_height / focal = real_height / distance
             # real_height (in COLMAP units) = pixel_height * distance / focal
