@@ -299,11 +299,15 @@ def _estimate_depth_rescue_volume(
     real_height_m = normalized_relief * visible_pile_height_m
 
     ground_base = float(np.percentile(depth_map[int(h * 0.85):, :], 50))
-    expansion = ((depth_map + 1e-6) / (ground_base + 1e-6)) ** -2.2
+    expansion_input = (depth_map + 1e-6) / (ground_base + 1e-6)
+    expansion_input = np.clip(expansion_input, 1e-3, 1e3)
+    expansion = expansion_input ** -2.2
     expansion = np.clip(expansion, 0.25, 16.0)
     pixel_area_map = (m_per_px_fg ** 2) / expansion
 
     volume_m3 = float(np.sum(real_height_m * pixel_area_map * pile_mask))
+    if not np.isfinite(volume_m3):
+        return None, visible_pile_height_m
     return volume_m3, visible_pile_height_m
 
 
