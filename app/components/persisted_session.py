@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import gzip
 import logging
+import os
 import pickle
 from pathlib import Path
 from typing import Any
@@ -42,6 +43,13 @@ PERSISTED_SESSION_KEYS = tuple(SIDEBAR_SETTING_KEYS) + (
     "manual_scale_override",
 )
 SNAPSHOT_FILENAME = "last_session_snapshot.pkl.gz"
+SNAPSHOT_ENV_VAR = "STOCKPILE_ENABLE_SESSION_SNAPSHOT"
+
+
+def snapshot_persistence_enabled() -> bool:
+    """Return whether disk-backed session snapshots are enabled."""
+    value = os.environ.get(SNAPSHOT_ENV_VAR, "").strip().lower()
+    return value in {"1", "true", "yes", "on"}
 
 
 def _snapshot_path(workspace: str | Path | None = None) -> Path:
@@ -85,6 +93,11 @@ def _calibration_to_payload(calibration: CalibrationResult | None) -> dict[str, 
         "num_cones_used": calibration.num_cones_used,
         "per_cone_scales": list(calibration.per_cone_scales),
         "cone_3d_positions": [np.asarray(pos, dtype=float) for pos in calibration.cone_3d_positions],
+        "detected_cone_frames": calibration.detected_cone_frames,
+        "registered_cone_frames": calibration.registered_cone_frames,
+        "total_cone_detections": calibration.total_cone_detections,
+        "max_detections_in_frame": calibration.max_detections_in_frame,
+        "frames_with_multiple_detections": calibration.frames_with_multiple_detections,
         "selected_method": calibration.selected_method,
         "projection_scale_factor": calibration.projection_scale_factor,
         "projection_confidence": calibration.projection_confidence,
@@ -104,6 +117,11 @@ def _calibration_from_payload(payload: dict[str, Any] | None) -> CalibrationResu
         num_cones_used=int(payload["num_cones_used"]),
         per_cone_scales=[float(value) for value in payload.get("per_cone_scales", [])],
         cone_3d_positions=[np.asarray(pos, dtype=float) for pos in payload.get("cone_3d_positions", [])],
+        detected_cone_frames=int(payload.get("detected_cone_frames", 0)),
+        registered_cone_frames=int(payload.get("registered_cone_frames", 0)),
+        total_cone_detections=int(payload.get("total_cone_detections", 0)),
+        max_detections_in_frame=int(payload.get("max_detections_in_frame", 0)),
+        frames_with_multiple_detections=int(payload.get("frames_with_multiple_detections", 0)),
         selected_method=str(payload.get("selected_method", "projection")),
         projection_scale_factor=payload.get("projection_scale_factor"),
         projection_confidence=payload.get("projection_confidence"),
@@ -305,6 +323,12 @@ def persist_session_snapshot(
 ) -> Path:
     """Write the latest recoverable app state to disk."""
     snapshot_path = _snapshot_path(workspace or getattr(config, "workspace", None))
+    if not snapshot_persistence_enabled():
+        logger.debug(
+            "Skipping session snapshot persistence because %s is disabled",
+            SNAPSHOT_ENV_VAR,
+        )
+        return snapshot_path
     snapshot_path.parent.mkdir(parents=True, exist_ok=True)
 
     session_payload: dict[str, Any] = {}
@@ -332,6 +356,8 @@ def persist_session_snapshot(
 
 def restore_session_snapshot(session_state: Any, workspace: str | Path | None = None) -> bool:
     """Restore the latest recoverable app state into the current Streamlit session."""
+    if not snapshot_persistence_enabled():
+        return False
     snapshot_path = _snapshot_path(workspace)
     if not snapshot_path.exists():
         return False

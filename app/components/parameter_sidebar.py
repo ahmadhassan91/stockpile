@@ -1,5 +1,7 @@
 """Sidebar component for pipeline parameters."""
 
+from typing import Any, Mapping
+
 import streamlit as st
 
 from stockpile.config import DENSITY_PRESETS, DENSITY_RANGES, PipelineConfig
@@ -58,33 +60,53 @@ def apply_pending_sidebar_setting_overrides():
 
 def get_density_selection() -> tuple[str, float, str]:
     """Resolve the currently selected material and effective density."""
-    material = st.session_state.get("sidebar_material_select", MATERIAL_OPTIONS[0])
-    if material == "Custom":
-        density = float(st.session_state.get("sidebar_density_input", 1600.0))
-        density_display = f"{density:.0f} kg/m³"
-    else:
-        density = float(DENSITY_PRESETS[material])
-        density_display = f"{density/1000:.2f} MT/m³ (max)"
+    material, density = _resolve_material_density_from_values(st.session_state)
+    density_display = (
+        f"{density:.0f} kg/m³"
+        if material == "Custom"
+        else f"{density/1000:.2f} MT/m³ (max)"
+    )
     return material, density, density_display
+
+
+def _resolve_material_density_from_values(values: Mapping[str, Any]) -> tuple[str, float]:
+    material = str(values.get("sidebar_material_select", MATERIAL_OPTIONS[0]))
+    if material == "Custom":
+        return material, float(values.get("sidebar_density_input", 1600.0))
+    return material, float(DENSITY_PRESETS.get(material, DENSITY_PRESETS[MATERIAL_OPTIONS[0]]))
+
+
+def build_pipeline_config_from_values(values: Mapping[str, Any]) -> PipelineConfig:
+    """Build a PipelineConfig from sidebar-compatible values."""
+    state: dict[str, Any] = dict(DEFAULT_SETTING_STATE)
+    for key in DEFAULT_SETTING_STATE:
+        if key in values and values[key] is not None:
+            state[key] = values[key]
+
+    material, density = _resolve_material_density_from_values(state)
+    config = PipelineConfig(
+        material_density=density,
+        material_name=material if material != "Custom" else "custom",
+    )
+    config.scale_calibration.known_cone_height_m = float(state["sidebar_cone_height"])
+    config.scale_calibration.assumed_camera_height_m = float(state["sidebar_camera_height"])
+    config.frame_extraction.interval_sec = float(state["sidebar_frame_interval"])
+    config.frame_extraction.max_frames = int(state["sidebar_max_frames"])
+    config.colmap.quality = str(state["sidebar_colmap_quality"])
+    config.volume.grid_resolution = float(state["sidebar_grid_resolution"])
+    config.ground_plane.above_ground_threshold = float(state["sidebar_above_ground"])
+    config.manual_scale_override = (
+        float(state["sidebar_manual_scale_value"])
+        if state.get("sidebar_manual_scale_enabled")
+        else None
+    )
+    return config
 
 
 def build_pipeline_config_from_state() -> PipelineConfig:
     """Build a PipelineConfig from the persisted sidebar state."""
     ensure_pipeline_setting_state()
-    material, density, _ = get_density_selection()
-
-    config = PipelineConfig(
-        material_density=density,
-        material_name=material if material != "Custom" else "custom",
-    )
-    config.scale_calibration.known_cone_height_m = float(st.session_state["sidebar_cone_height"])
-    config.scale_calibration.assumed_camera_height_m = float(st.session_state["sidebar_camera_height"])
-    config.frame_extraction.interval_sec = float(st.session_state["sidebar_frame_interval"])
-    config.frame_extraction.max_frames = int(st.session_state["sidebar_max_frames"])
-    config.colmap.quality = st.session_state["sidebar_colmap_quality"]
-    config.volume.grid_resolution = float(st.session_state["sidebar_grid_resolution"])
-    config.ground_plane.above_ground_threshold = float(st.session_state["sidebar_above_ground"])
-    return config
+    return build_pipeline_config_from_values(st.session_state)
 
 
 def persist_pipeline_selection_metadata():

@@ -115,7 +115,11 @@ if result and result.calibration:
     st.write(f"**Scale factor used**: {(result.scale_factor_m_per_unit or cal.scale_factor):.6f} m/COLMAP unit")
     st.write(f"**Scale source**: {result.scale_source}")
     st.write(f"**Confidence**: {cal.confidence:.2%}")
-    st.write(f"**Cones used**: {cal.num_cones_used}")
+    st.write(f"**Unique cones used**: {cal.num_cones_used}")
+    st.write(f"**Cone-bearing frames detected**: {cal.detected_cone_frames}")
+    st.write(f"**Cone-bearing frames registered**: {cal.registered_cone_frames}")
+    st.write(f"**Max cones in one frame**: {cal.max_detections_in_frame}")
+    st.write(f"**Frames with multiple cones**: {cal.frames_with_multiple_detections}")
     if cal.projection_scale_factor is not None:
         st.write(f"**Projection scale**: {cal.projection_scale_factor:.6f} m/unit")
     if cal.camera_height_scale_factor is not None:

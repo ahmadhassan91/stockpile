@@ -38,6 +38,20 @@ class ColmapConfig:
     camera_model: str = "SIMPLE_RADIAL"
     use_sequential_matching: bool = True
     use_gpu: bool = True
+    use_gpu_matching: bool = True  # Falls back to CPU automatically if GPU matching fails.
+    feature_num_threads: int = -1
+    matching_num_threads: int = -1
+    mapper_num_threads: int = -1
+    random_seed: int = 7
+    max_num_matches: int = 8192
+    max_num_features_cap: int = 8192
+    min_geometric_matches_for_mapper: int = 20
+    min_registered_image_ratio: float = 0.70
+    min_init_pair_inliers: int = 40
+    min_init_pair_frame_gap: int = 12
+    mapper_init_num_trials: int = 300
+    mapper_max_runtime_seconds: int = 900
+    mapper_init_min_num_inliers: int = 30
     max_colmap_frames: int = 300  # use more frames on GPU-backed deployments for better pile coverage
 
 
@@ -48,7 +62,11 @@ class ScaleCalibrationConfig:
     dbscan_eps: float = 0.20  # In COLMAP units, clusters trimmed cone centroids across frames
     dbscan_min_samples: int = 2
     min_cones_for_confidence: int = 3
-    projection_outlier_mad_multiplier: float = 3.5
+    projection_outlier_mad_multiplier: float = 2.5
+    min_plausible_scale: float = 0.5
+    max_plausible_scale: float = 20.0
+    max_projection_distance: float = 1.0  # COLMAP units — reject far-field samples with inflated distances
+    min_cone_pixel_height: int = 100  # reject small detections with noisy scale
     cone_position_percentile: float = 50.0
     cone_position_min_points: int = 3
     camera_height_ground_std_rel_max: float = 0.10
@@ -113,6 +131,8 @@ class QualityGateConfig:
     max_grid_to_hull_warn_ratio: float = 2.5
     max_grid_to_hull_block_ratio: float = 5.0
     tall_pile_warn_m: float = 12.0
+    tall_pile_block_m: float = 15.0
+    tall_pile_grid_to_hull_block_ratio: float = 2.5
     peak_relief_warn_m: float = 1.0
     peak_relief_block_m: float = 2.0
     peak_relief_warn_ratio: float = 1.08

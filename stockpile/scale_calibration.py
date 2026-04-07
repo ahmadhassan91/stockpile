@@ -1,7 +1,9 @@
 """Scale calibration: compute real-world scale from cone detections + COLMAP data."""
 
 import logging
+import re
 from dataclasses import dataclass, field
+from pathlib import Path
 
 import numpy as np
 import open3d as o3d
@@ -13,6 +15,12 @@ from .config import ScaleCalibrationConfig
 logger = logging.getLogger(__name__)
 
 
+def _frame_index(name: str) -> int | None:
+    """Extract numeric frame index from a filename like frame_00123.jpg."""
+    m = re.search(r"(\d+)", Path(name).stem)
+    return int(m.group(1)) if m else None
+
+
 @dataclass
 class CalibrationResult:
     scale_factor: float  # meters per COLMAP unit
@@ -20,6 +28,11 @@ class CalibrationResult:
     num_cones_used: int
     per_cone_scales: list[float]
     cone_3d_positions: list[np.ndarray]
+    detected_cone_frames: int = 0
+    registered_cone_frames: int = 0
+    total_cone_detections: int = 0
+    max_detections_in_frame: int = 0
+    frames_with_multiple_detections: int = 0
     selected_method: str = "projection"
     projection_scale_factor: float | None = None
     projection_confidence: float | None = None
@@ -100,19 +113,57 @@ def calibrate_scale_projection(
     4. Compute distance from camera center to that 3D point
     5. scale = known_height_m * focal_length_px / (pixel_height * distance)
 
-    This is much more reliable than measuring 3D point spread because it
-    only needs ONE good 3D point per cone (not a cluster), and uses the
-    well-calibrated camera model.
+    When a cone frame is not directly registered in COLMAP, we fall back to
+    the nearest registered frame (by frame index) and use its camera pose
+    and keypoints instead (Fix C: frame interpolation).
     """
     name_to_image = {img.name: img for img in images.values()}
+
+    # Build frame-index → COLMAP image lookup for nearest-neighbor fallback
+    _idx_to_colmap: dict[int, ColmapImage] = {}
+    for img in images.values():
+        idx = _frame_index(img.name)
+        if idx is not None:
+            _idx_to_colmap[idx] = img
+    _sorted_registered_indices = sorted(_idx_to_colmap.keys()) if _idx_to_colmap else []
+
+    def _resolve_colmap_image(frame_name: str) -> ColmapImage | None:
+        """Return the COLMAP image for frame_name, falling back to the nearest
+        registered frame when the exact name is not in the reconstruction."""
+        direct = name_to_image.get(frame_name)
+        if direct is not None:
+            return direct
+        if not _sorted_registered_indices:
+            return None
+        idx = _frame_index(frame_name)
+        if idx is None:
+            return None
+        # Binary search for the closest registered frame index
+        import bisect
+        pos = bisect.bisect_left(_sorted_registered_indices, idx)
+        candidates = []
+        if pos < len(_sorted_registered_indices):
+            candidates.append(_sorted_registered_indices[pos])
+        if pos > 0:
+            candidates.append(_sorted_registered_indices[pos - 1])
+        best = min(candidates, key=lambda c: abs(c - idx))
+        # Only use the neighbor if it's within 5 frames (to limit pose drift)
+        if abs(best - idx) > 5:
+            return None
+        return _idx_to_colmap[best]
+
     per_frame_scales = []
     cone_positions = []
     notes: list[str] = []
+    fallback_count = 0
 
     for frame_name, detections in cone_detections.items():
-        colmap_img = name_to_image.get(frame_name)
+        colmap_img = _resolve_colmap_image(frame_name)
         if colmap_img is None:
             continue
+        is_fallback = (colmap_img.name != frame_name)
+        if is_fallback:
+            fallback_count += 1
 
         camera = cameras.get(colmap_img.camera_id)
         if camera is None:
@@ -125,7 +176,7 @@ def calibrate_scale_projection(
             x, y, w, h = det.bbox
             pixel_height = h  # cone height in pixels
 
-            if pixel_height < 20:  # too small to be reliable
+            if pixel_height < config.min_cone_pixel_height:
                 continue
 
             # Find COLMAP keypoints inside the cone bbox with valid 3D points
@@ -154,10 +205,23 @@ def calibrate_scale_projection(
             if not matched_distances:
                 continue
 
+            # Reject background points that land inside the cone bbox but sit
+            # materially deeper than the cone itself in COLMAP space.
+            dists_arr = np.asarray(matched_distances, dtype=float)
+            med_dist = float(np.median(dists_arr))
+            depth_mask = dists_arr <= 2.0 * med_dist
+            if depth_mask.sum() < 1:
+                continue
+            matched_distances = list(dists_arr[depth_mask])
+            matched_positions = [p for p, keep in zip(matched_positions, depth_mask) if keep]
+
             # Use the CLOSEST keypoints — they're most likely on the cone
             # surface, not background objects that happen to project inside
             # the bounding box. Use 25th percentile for robustness.
             close_dist = np.percentile(matched_distances, 25)
+
+            if close_dist > config.max_projection_distance:
+                continue
 
             # Projection: pixel_height / focal = real_height / distance
             # real_height (in COLMAP units) = pixel_height * distance / focal
@@ -172,12 +236,25 @@ def calibrate_scale_projection(
                 min_points=config.cone_position_min_points,
             )
 
+            if scale < config.min_plausible_scale or scale > config.max_plausible_scale:
+                continue
+
             per_frame_scales.append(scale)
             # Store a trimmed 3D position estimate as the cone location.
             cone_positions.append(np.median(cone_points, axis=0))
 
     if not per_frame_scales:
         raise ValueError("No cone-camera projection matches found for calibration")
+
+    if fallback_count > 0:
+        notes.append(
+            f"Used nearest-neighbor COLMAP frames for {fallback_count} "
+            f"cone detections whose exact frames were not in the reconstruction."
+        )
+        logger.info(
+            "Frame interpolation: %d cone frames matched via nearest registered neighbor",
+            fallback_count,
+        )
 
     raw_scales = np.asarray(per_frame_scales, dtype=float)
     raw_positions = np.asarray(cone_positions, dtype=float)
@@ -209,16 +286,76 @@ def calibrate_scale_projection(
 
     # Deduplicate cone positions with a scene-scale radius, since the median
     # 3D point inside each bbox can drift noticeably between frames.
+    # Also gather positions from a RELAXED pixel-height threshold (half the
+    # strict minimum) — these extra positions don't contribute to scale but
+    # help count distinct cones for multi-reference cross-checking.
+    relaxed_min_px = max(40, config.min_cone_pixel_height // 2)
+    relaxed_extra_positions: list[np.ndarray] = []
+    if relaxed_min_px < config.min_cone_pixel_height:
+        for frame_name, detections in cone_detections.items():
+            colmap_img = _resolve_colmap_image(frame_name)
+            if colmap_img is None:
+                continue
+            camera = cameras.get(colmap_img.camera_id)
+            if camera is None:
+                continue
+            cam_center = _camera_center(colmap_img)
+            for det in detections:
+                x, y, w, h = det.bbox
+                if h >= config.min_cone_pixel_height or h < relaxed_min_px:
+                    continue  # already counted, or too small even for relaxed
+                margin = 5
+                x1, y1 = x - margin, y - margin
+                x2, y2 = x + w + margin, y + h + margin
+                mpos = []
+                mdist = []
+                for idx2 in range(len(colmap_img.xys)):
+                    kx, ky = colmap_img.xys[idx2]
+                    p3d_id = int(colmap_img.point3d_ids[idx2])
+                    if p3d_id < 0 or p3d_id not in points3d:
+                        continue
+                    if not (x1 <= kx <= x2 and y1 <= ky <= y2):
+                        continue
+                    pt3d = points3d[p3d_id].xyz
+                    d = np.linalg.norm(pt3d - cam_center)
+                    mpos.append(pt3d)
+                    mdist.append(d)
+                if mpos:
+                    relaxed_extra_positions.append(np.median(np.asarray(mpos), axis=0))
+
+    all_positions_for_dedup = list(filtered_positions) + relaxed_extra_positions
     unique_positions = _deduplicate_positions(
-        list(filtered_positions),
+        all_positions_for_dedup,
         threshold=config.dbscan_eps,
         min_samples=config.dbscan_min_samples,
     )
+    if relaxed_extra_positions:
+        logger.info(
+            "Relaxed cone pass added %d extra position samples for deduplication",
+            len(relaxed_extra_positions),
+        )
     if len(filtered_positions) >= config.min_cones_for_confidence and len(unique_positions) < 2:
         notes.append(
             "Many cone detections collapsed into a single 3D reference, which usually means only one cone "
             "triangulated cleanly enough for scale calibration."
         )
+
+    if len(unique_positions) >= 2:
+        dists_m = []
+        for i in range(len(unique_positions)):
+            for j in range(i + 1, len(unique_positions)):
+                d = float(np.linalg.norm(
+                    np.asarray(unique_positions[i]) - np.asarray(unique_positions[j])
+                )) * scale_factor
+                dists_m.append(d)
+        med_spacing = float(np.median(dists_m))
+        notes.append(f"Inter-cone spacing (median): {med_spacing:.1f} m")
+        if med_spacing < 1.0 or med_spacing > 200.0:
+            notes.append(
+                f"WARNING: median inter-cone distance {med_spacing:.1f} m "
+                "is outside the plausible 1-200 m range."
+            )
+            confidence *= 0.5
 
     logger.info(
         "Projection-based scale: %.4f m/unit (from %d/%d frame-cone pairs, "
@@ -502,10 +639,33 @@ def calibrate_scale(
             else "Projection and camera-height scale checks are broadly aligned"
         )
         if ratio < config.max_method_disagreement_ratio:
-            logger.info(
-                "Using projection scale %.4f (camera-height was %.4f, ratio %.2f)",
-                projection_result.scale_factor, camera_result.scale_factor, ratio,
-            )
+            # Methods broadly agree — blend with confidence-weighted average
+            # when projection confidence is modest (< 0.7) and camera-height
+            # confidence is non-trivial (>= 0.20).
+            p_conf = projection_result.confidence
+            c_conf = camera_result.confidence
+            if p_conf < 0.70 and c_conf >= config.min_camera_height_confidence_for_crosscheck:
+                total = p_conf + c_conf
+                w_proj = p_conf / total
+                w_cam = c_conf / total
+                blended = w_proj * projection_result.scale_factor + w_cam * camera_result.scale_factor
+                projection_result.notes.append(
+                    f"Blended scale: {blended:.4f} (projection {w_proj:.0%} × {projection_result.scale_factor:.4f} "
+                    f"+ camera-height {w_cam:.0%} × {camera_result.scale_factor:.4f})"
+                )
+                logger.info(
+                    "Blending projection (%.4f, conf=%.2f) with camera-height (%.4f, conf=%.2f) → %.4f",
+                    projection_result.scale_factor, p_conf,
+                    camera_result.scale_factor, c_conf,
+                    blended,
+                )
+                projection_result.scale_factor = blended
+                projection_result.confidence = min(1.0, p_conf + 0.1 * c_conf)
+            else:
+                logger.info(
+                    "Using projection scale %.4f (camera-height was %.4f, ratio %.2f)",
+                    projection_result.scale_factor, camera_result.scale_factor, ratio,
+                )
         else:
             logger.warning(
                 "Projection (%.4f) and camera-height (%.4f) disagree by %.1fx — "

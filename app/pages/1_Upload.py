@@ -14,7 +14,9 @@ from stockpile.frame_extraction import get_first_frame, get_video_info
 
 import sys
 sys.path.insert(0, str(Path(__file__).parent.parent))
+from components.client_test_log import append_client_test_event, start_new_upload_tracking
 from components.parameter_sidebar import (
+    build_pipeline_config_from_values,
     build_pipeline_config_from_state,
     get_pipeline_setting_signature,
     queue_sidebar_setting_overrides,
@@ -24,10 +26,19 @@ from components.parameter_sidebar import (
 from components.persisted_session import clear_session_snapshot, persist_session_snapshot
 from components.pipeline_presets import build_recommended_sidebar_overrides
 from components.reliability_status import classify_preflight_status, render_status_callout
+from components.run_guard import describe_active_run, read_active_run_lock
 from components.session_init import init_session_state
 
 init_session_state()
 st.header("1. Upload Video")
+
+active_run = read_active_run_lock()
+if active_run is not None:
+    st.info(
+        "Processing capacity is currently busy. "
+        + describe_active_run(active_run)
+        + " You can still review this upload while the current reconstruction finishes."
+    )
 
 PRESET_NAMES = list(DENSITY_PRESETS.keys())
 SETTING_KEY_MAP = {
@@ -67,20 +78,19 @@ def apply_dialog_settings():
         for dialog_key, sidebar_key in SETTING_KEY_MAP.items()
     }
     queue_sidebar_setting_overrides(sidebar_overrides)
+    confirmed_config = build_pipeline_config_from_values(sidebar_overrides)
+    st.session_state["pipeline_config"] = confirmed_config
+    st.session_state["confirmed_pipeline_config"] = confirmed_config
 
     material = sidebar_overrides["sidebar_material_select"]
     if material == "Custom":
-        density = float(sidebar_overrides["sidebar_density_input"])
+        density = float(confirmed_config.material_density)
         density_display = f"{density:.0f} kg/m³"
     else:
         density = float(DENSITY_PRESETS[material])
         density_display = f"{density/1000:.2f} MT/m³ (max)"
 
-    st.session_state["manual_scale_override"] = (
-        float(sidebar_overrides["sidebar_manual_scale_value"])
-        if sidebar_overrides.get("sidebar_manual_scale_enabled")
-        else None
-    )
+    st.session_state["manual_scale_override"] = confirmed_config.manual_scale_override
     st.session_state["selected_material"] = material
     st.session_state["selected_density"] = density
     st.session_state["selected_density_display"] = density_display
@@ -91,7 +101,14 @@ def apply_dialog_settings():
         for key in SIDEBAR_SETTING_KEYS
         if key != "sidebar_admin_mode"
     )
-    persist_session_snapshot(st.session_state, config=st.session_state.get("pipeline_config"))
+    persist_session_snapshot(st.session_state, config=confirmed_config)
+    append_client_test_event(
+        st.session_state,
+        "settings_confirmed",
+        config=confirmed_config,
+        video_info=st.session_state.get("_video_info"),
+        detections=st.session_state.get("_cone_detections"),
+    )
 
 
 def infer_material_from_filename(filename: str) -> str | None:
@@ -506,6 +523,7 @@ if (
 ):
     st.session_state.settings_confirmed = False
     st.session_state.settings_dialog_dismissed = False
+    st.session_state["confirmed_pipeline_config"] = None
 
 st.session_state.pipeline_config = build_pipeline_config_from_state()
 
@@ -521,9 +539,11 @@ if uploaded is not None:
     upload_signature = f"{uploaded.name}:{uploaded.size}"
     is_new_file = st.session_state.get("last_uploaded_signature") != upload_signature
     if is_new_file:
+        start_new_upload_tracking(st.session_state)
         st.session_state.settings_confirmed = False
         st.session_state.settings_dialog_dismissed = False
         st.session_state.confirmed_settings_signature = None
+        st.session_state["confirmed_pipeline_config"] = None
         st.session_state["ai_preflight_result"] = None
         st.session_state["ai_preflight_source"] = None
         st.session_state["pipeline_result"] = None
@@ -595,6 +615,14 @@ if uploaded is not None:
 
             status.update(label="Video ready!", state="complete", expanded=False)
             st.session_state["_upload_processed"] = True
+            append_client_test_event(
+                st.session_state,
+                "upload_ready",
+                config=st.session_state.get("pipeline_config"),
+                uploaded_file=uploaded,
+                video_info=st.session_state.get("_video_info"),
+                detections=st.session_state.get("_cone_detections"),
+            )
 
     info, frame, detections = load_video_context()
     material_for_recommendation = st.session_state.get("dialog_material_select") or st.session_state.get(
@@ -639,6 +667,11 @@ if uploaded is not None:
         col_banner, col_change = st.columns([4, 1])
         with col_banner:
             render_settings_summary(preflight_status=preflight_status)
+            if preflight_status.key == "retake_needed":
+                st.error(
+                    "Client-facing safe mode will block this upload before reconstruction starts. "
+                    "Please improve the capture before moving to Processing."
+                )
         with col_change:
             if st.button("✏️ Change", use_container_width=True, key="change_settings_review_btn"):
                 seed_settings_dialog_from_sidebar(force=True)
@@ -710,4 +743,5 @@ elif st.session_state.get("video_path"):
             st.rerun()
 else:
     st.session_state.settings_confirmed = False
+    st.session_state["confirmed_pipeline_config"] = None
     st.info("Please upload a video to get started.")
