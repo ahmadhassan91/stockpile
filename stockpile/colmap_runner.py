@@ -656,6 +656,14 @@ def run_colmap_reconstruction(
             "--Mapper.ba_use_gpu", "1" if config.use_gpu else "0",
         ]
         mapper_timeout_seconds = max(120, int(config.mapper_max_runtime_seconds) + 90)
+        # P2 reliability: cap the forced-pair attempt aggressively. Historic
+        # server logs show ~4 forced-pair failures per day, each burning 1.5-3
+        # minutes of wall-clock before the retry path kicks in. A shorter budget
+        # means a degenerate init pair costs us <2 minutes, not 15.
+        forced_pair_budget = max(
+            60,
+            int(getattr(config, "forced_pair_max_runtime_seconds", 120)),
+        )
         init_pair = _choose_mapper_init_pair(
             database_path,
             int(config.min_init_pair_inliers),
@@ -663,18 +671,25 @@ def run_colmap_reconstruction(
         )
         mapper_cmd_with_pair = list(mapper_cmd)
         if init_pair:
+            # Replace the shared runtime budget with the tighter one for the
+            # forced-pair pass, so COLMAP gives up quickly on a bad pair.
+            for idx, tok in enumerate(mapper_cmd_with_pair):
+                if tok == "--Mapper.max_runtime_seconds":
+                    mapper_cmd_with_pair[idx + 1] = str(forced_pair_budget)
+                    break
             mapper_cmd_with_pair.extend(
                 [
                     "--Mapper.init_image_id1", str(init_pair[0]),
                     "--Mapper.init_image_id2", str(init_pair[1]),
                 ]
             )
+        forced_pair_subprocess_timeout = forced_pair_budget + 60
         try:
             _run_colmap_command(
                 mapper_cmd_with_pair,
                 workspace_dir,
                 "mapper",
-                timeout=mapper_timeout_seconds,
+                timeout=forced_pair_subprocess_timeout if init_pair else mapper_timeout_seconds,
             )
         except RuntimeError:
             if not init_pair:
@@ -682,13 +697,28 @@ def run_colmap_reconstruction(
             if not _is_unsuitable_init_pair_failure(workspace_dir, "mapper"):
                 raise
             logger.warning(
-                "Mapper failed with fixed init pair %s; retrying without forced pair.",
+                "Mapper failed with fixed init pair %s after %ds budget; retrying without forced pair.",
                 init_pair,
+                forced_pair_budget,
             )
             _run_colmap_command(
                 mapper_cmd,
                 workspace_dir,
                 "mapper_retry_without_fixed_pair",
+                timeout=mapper_timeout_seconds,
+            )
+        except subprocess.TimeoutExpired:
+            if not init_pair:
+                raise
+            logger.warning(
+                "Mapper forced-pair %s exceeded %ds budget; retrying without forced pair.",
+                init_pair,
+                forced_pair_budget,
+            )
+            _run_colmap_command(
+                mapper_cmd,
+                workspace_dir,
+                "mapper_retry_after_forced_pair_timeout",
                 timeout=mapper_timeout_seconds,
             )
 

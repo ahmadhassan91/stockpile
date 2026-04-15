@@ -221,6 +221,8 @@ def detect_cones_in_frames(
     """
     config = config or ConeDetectionConfig()
     results = {}
+    cap = max(1, int(getattr(config, "max_detections_per_frame_cap", 4)))
+    saturated_frames = 0
 
     for i, path in enumerate(frame_paths):
         image = cv2.imread(str(path))
@@ -229,13 +231,26 @@ def detect_cones_in_frames(
             continue
 
         detections = detect_cones(image, config)
+        if len(detections) > cap:
+            # Per-frame saturation: texture like reddish aggregate can yield
+            # many spurious "cones" in a single frame. Dropping the whole
+            # frame is safer than feeding the scale solver false positives.
+            saturated_frames += 1
+            logger.warning(
+                "Frame %s returned %d red blobs (> cap %d); dropping all detections as texture saturation.",
+                path.name, len(detections), cap,
+            )
+            detections = []
         if detections:
             results[path.name] = detections
 
         if progress_callback:
             progress_callback((i + 1) / len(frame_paths))
 
-    logger.info("Found cones in %d / %d frames", len(results), len(frame_paths))
+    logger.info(
+        "Found cones in %d / %d frames (saturated_frames_dropped=%d)",
+        len(results), len(frame_paths), saturated_frames,
+    )
     return results
 
 

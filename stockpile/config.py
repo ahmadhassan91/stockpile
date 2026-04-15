@@ -31,6 +31,10 @@ class ConeDetectionConfig:
     min_fill_ratio: float = 0.18
     max_bbox_width_ratio: float = 0.22
     max_bbox_height_ratio: float = 0.32
+    # P1 reliability: frames with more detections than this are treated as
+    # texture saturation (e.g. reddish aggregate) and their detections dropped.
+    # Real walkarounds rarely expose more than 3-4 cones to the camera at once.
+    max_detections_per_frame_cap: int = 4
 
 
 @dataclass
@@ -53,9 +57,19 @@ class ColmapConfig:
     min_registered_image_ratio: float = 0.70
     min_init_pair_inliers: int = 40
     min_init_pair_frame_gap: int = 12
-    mapper_init_num_trials: int = 300
-    mapper_max_runtime_seconds: int = 900
+    # P2 reliability: the forced-pair mapper has been failing ~4x/day with
+    # "Provided pair is unsuitable for initialization". Each attempt burns
+    # num_trials * ~300ms before giving up. Previous values of 300/900 came
+    # from a well-matched corpus; they were too generous for client videos
+    # where init-pair geometry is often degenerate. Revert to the earlier
+    # 80/420 budget and let the retry-without-forced-pair kick in sooner.
+    mapper_init_num_trials: int = 80
+    mapper_max_runtime_seconds: int = 420
     mapper_init_min_num_inliers: int = 30
+    # Budget for the forced-pair attempt specifically. If the pair cannot
+    # initialise within this window we skip straight to unforced mapping
+    # rather than waiting out the full mapper_max_runtime_seconds.
+    forced_pair_max_runtime_seconds: int = 120
     max_colmap_frames: int = 300  # use more frames on GPU-backed deployments for better pile coverage
 
 
@@ -122,18 +136,21 @@ class VolumeConfig:
 
 @dataclass
 class QualityGateConfig:
-    min_calibration_confidence_warn: float = 0.40
-    min_calibration_confidence_block: float = 0.35
+    # P0 reliability tightening (2026-04-15): the 19:40 aggregate run surfaced a
+    # 4.5x scale disagreement with 39% confidence and 6 cones/frame as a
+    # "review only" estimate; these stricter gates block that shape of failure.
+    min_calibration_confidence_warn: float = 0.50
+    min_calibration_confidence_block: float = 0.50
     min_unique_cones_warn: int = 3
     min_unique_cones_block: int = 2
-    min_verified_calibration_confidence: float = 0.55
-    max_verified_scale_disagreement: float = 1.8
+    min_verified_calibration_confidence: float = 0.60
+    max_verified_scale_disagreement: float = 1.6
     max_review_grade_unique_cones: int = 2
     max_scale_disagreement_warn: float = 1.5
-    max_scale_disagreement_block: float = 3.0
+    max_scale_disagreement_block: float = 2.0
     max_detected_cones_per_frame_warn: int = 4
-    max_detected_cones_per_frame_block: int = 6
-    dense_cone_scale_disagreement_block: float = 2.25
+    max_detected_cones_per_frame_block: int = 5
+    dense_cone_scale_disagreement_block: float = 1.8
     min_pile_points_warn: int = 5000
     min_pile_points_block: int = 1500
     min_grid_occupancy_warn_pct: float = 5.0

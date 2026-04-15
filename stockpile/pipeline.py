@@ -1,6 +1,7 @@
 """Pipeline orchestrator wiring all stages together."""
 
 import logging
+import random
 import shutil
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -322,6 +323,19 @@ class Pipeline:
         result = PipelineResult()
 
         try:
+            # P3 determinism: seed everything up-front so cone ordering,
+            # RANSAC initialisers, and any random draws across the pipeline
+            # start from the same state for a given config. Note that
+            # COLMAP's CUDA kernels remain nondeterministic regardless.
+            seed = int(self.config.colmap.random_seed)
+            random.seed(seed)
+            np.random.seed(seed)
+            try:
+                o3d.utility.random.seed(seed)
+            except Exception:
+                # Older Open3D builds may not expose random.seed; non-fatal.
+                pass
+
             # Setup workspace
             self.config.workspace.mkdir(parents=True, exist_ok=True)
             self.config.images_dir.mkdir(parents=True, exist_ok=True)

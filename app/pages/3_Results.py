@@ -205,22 +205,55 @@ st.divider()
 # ── Volume Results ─────────────────────────────────────────────────────────────
 st.subheader("📦 Volume & Weight")
 
-col1, col2, col3 = st.columns(3)
-col1.metric(
-    "Volume (review-grade)" if getattr(result, "review_grade", False)
-    else ("Volume (verified)" if result.publishable else "Volume (review only)"),
-    f"{vol.recommended_m3:.2f} m³",
-    help="The selected output after applying volume sanity checks",
-)
-col2.metric(
-    "Weight",
-    f"{result.weight_kg / 1000:.2f} tonnes",
-)
-col3.metric(
-    "Weight (kg)",
-    f"{result.weight_kg:,.0f} kg",
-    help=f"Density used: {config.material_density:.0f} kg/m³ ({config.material_name})",
-)
+if not result.publishable:
+    # P0 reliability gate: the pipeline rejected this run. Do NOT render the
+    # headline weight as a normal metric — a client reading this screen could
+    # otherwise mistake the "review only" number for a delivered answer.
+    st.error(
+        "🚫 **RESULT REJECTED — DO NOT USE FOR REPORTING.** "
+        "The reliability checks above failed, so the numbers below are for "
+        "diagnostic review only. Sharing them with a client or using them "
+        "for any business decision is not safe."
+    )
+    with st.expander("Diagnostic values (for debugging only — not for reporting)"):
+        st.caption(
+            "These numbers reflect what the pipeline *would* have reported if "
+            "calibration had passed. They are shown only so you can compare "
+            "with a re-capture or manual override."
+        )
+        d1, d2, d3 = st.columns(3)
+        d1.metric(
+            "Volume (rejected)",
+            f"{vol.recommended_m3:.2f} m³",
+            help="Rejected by reliability gates — do not use",
+        )
+        d2.metric(
+            "Weight (rejected)",
+            f"{result.weight_kg / 1000:.2f} tonnes",
+            help="Rejected by reliability gates — do not use",
+        )
+        d3.metric(
+            "Weight kg (rejected)",
+            f"{result.weight_kg:,.0f} kg",
+            help=f"Density used: {config.material_density:.0f} kg/m³ ({config.material_name})",
+        )
+else:
+    col1, col2, col3 = st.columns(3)
+    col1.metric(
+        "Volume (review-grade)" if getattr(result, "review_grade", False)
+        else "Volume (verified)",
+        f"{vol.recommended_m3:.2f} m³",
+        help="The selected output after applying volume sanity checks",
+    )
+    col2.metric(
+        "Weight",
+        f"{result.weight_kg / 1000:.2f} tonnes",
+    )
+    col3.metric(
+        "Weight (kg)",
+        f"{result.weight_kg:,.0f} kg",
+        help=f"Density used: {config.material_density:.0f} kg/m³ ({config.material_name})",
+    )
 
 # All three volume methods side-by-side
 st.subheader("Volume Method Comparison")
