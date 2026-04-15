@@ -73,7 +73,23 @@ class Pipeline:
     def _report(self, stage: str, progress: float, message: str = ""):
         if self.config.progress_callback:
             self.config.progress_callback(stage, progress, message)
-        logger.info("[%s] %.0f%% %s", stage, progress * 100, message)
+        # P4 log hygiene: only log on 10% boundaries (and always at 0 / 1 /
+        # when a message is attached). The per-frame progress callback used
+        # to emit thousands of lines per stage, burying real signal.
+        pct = int(progress * 100)
+        should_log = (
+            bool(message)
+            or progress <= 0.0
+            or progress >= 1.0
+            or pct % 10 == 0
+        )
+        if should_log:
+            last_pct = getattr(self, "_last_logged_pct", {}).get(stage, -1)
+            if pct != last_pct or message:
+                logger.info("[%s] %d%% %s", stage, pct, message)
+                if not hasattr(self, "_last_logged_pct"):
+                    self._last_logged_pct = {}
+                self._last_logged_pct[stage] = pct
 
     def _add_warning(self, result: PipelineResult, message: str):
         if message not in result.quality_warnings:
