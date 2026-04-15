@@ -54,6 +54,7 @@ def detect_cones(
     """Detect red traffic cones in a BGR image."""
     config = config or ConeDetectionConfig()
     mask = create_red_mask(image_bgr, config)
+    image_shape = image_bgr.shape
 
     contours, _ = cv2.findContours(mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
 
@@ -96,13 +97,7 @@ def detect_cones(
     # Second pass: apply strict filters on merged detections
     detections = []
     for det in merged:
-        if det.area < config.min_area or det.area > config.max_area:
-            continue
-        x, y, w, h = det.bbox
-        aspect_ratio = h / w if w > 0 else 0
-        if aspect_ratio < config.min_aspect_ratio or aspect_ratio > config.max_aspect_ratio:
-            continue
-        if det.solidity < config.min_solidity:
+        if not _passes_shape_filters(det, image_shape, config):
             continue
         detections.append(det)
 
@@ -174,6 +169,45 @@ def _merge_vertically_aligned(detections: list[ConeDetection]) -> list[ConeDetec
             merged.append(d1)
 
     return merged
+
+
+def _bbox_fill_ratio(det: ConeDetection) -> float:
+    """Return the fraction of the bounding box covered by the contour."""
+    _, _, w, h = det.bbox
+    bbox_area = w * h
+    if bbox_area <= 0:
+        return 0.0
+    return float(det.area / bbox_area)
+
+
+def _passes_shape_filters(
+    det: ConeDetection,
+    image_shape: tuple[int, ...],
+    config: ConeDetectionConfig,
+) -> bool:
+    """Reject merged red blobs that are too sparse or too large to be cones."""
+    if det.area < config.min_area or det.area > config.max_area:
+        return False
+
+    x, y, w, h = det.bbox
+    aspect_ratio = h / w if w > 0 else 0.0
+    if aspect_ratio < config.min_aspect_ratio or aspect_ratio > config.max_aspect_ratio:
+        return False
+    if det.solidity < config.min_solidity:
+        return False
+
+    fill_ratio = _bbox_fill_ratio(det)
+    if fill_ratio < config.min_fill_ratio:
+        return False
+
+    image_h, image_w = image_shape[:2]
+    if image_w <= 0 or image_h <= 0:
+        return False
+    if (w / image_w) > config.max_bbox_width_ratio:
+        return False
+    if (h / image_h) > config.max_bbox_height_ratio:
+        return False
+    return True
 
 
 def detect_cones_in_frames(

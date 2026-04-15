@@ -50,6 +50,18 @@ def _stale_after_seconds() -> int:
         return DEFAULT_ACTIVE_RUN_STALE_SECONDS
 
 
+def _pid_is_alive(pid: int | None) -> bool:
+    if pid is None or pid <= 0:
+        return False
+    try:
+        os.kill(pid, 0)
+    except ProcessLookupError:
+        return False
+    except PermissionError:
+        return True
+    return True
+
+
 @dataclass(frozen=True)
 class ActiveRunInfo:
     token: str
@@ -115,7 +127,7 @@ def read_active_run_lock() -> ActiveRunInfo | None:
     payload = _read_lock_payload()
     if not payload or not payload.get("token"):
         return None
-    return ActiveRunInfo(
+    active_run = ActiveRunInfo(
         token=str(payload["token"]),
         session_id=payload.get("session_id"),
         upload_id=payload.get("upload_id"),
@@ -129,9 +141,15 @@ def read_active_run_lock() -> ActiveRunInfo | None:
         message=payload.get("message"),
         pid=payload.get("pid"),
     )
+    if _is_stale(active_run):
+        _clear_lock_if_matches(active_run.token)
+        return None
+    return active_run
 
 
 def _is_stale(active_run: ActiveRunInfo) -> bool:
+    if active_run.pid is not None and not _pid_is_alive(active_run.pid):
+        return True
     age_seconds = active_run.age_seconds
     if age_seconds is None:
         return True
@@ -161,8 +179,8 @@ def _write_lock_payload(payload: dict[str, Any], *, exclusive: bool) -> bool:
 
 def _clear_lock_if_matches(expected_token: str | None = None) -> bool:
     lock_path = _lock_path()
-    active_run = read_active_run_lock()
-    if active_run is None:
+    payload = _read_lock_payload()
+    if not payload or not payload.get("token"):
         if lock_path.exists():
             try:
                 lock_path.unlink()
@@ -170,7 +188,8 @@ def _clear_lock_if_matches(expected_token: str | None = None) -> bool:
             except FileNotFoundError:
                 return False
         return False
-    if expected_token is not None and active_run.token != expected_token:
+    token = str(payload["token"])
+    if expected_token is not None and token != expected_token:
         return False
     try:
         lock_path.unlink()
@@ -230,10 +249,9 @@ def try_acquire_run_lock(
             )
         except FileExistsError:
             active_run = read_active_run_lock()
-            if active_run is not None and _is_stale(active_run):
-                if _clear_lock_if_matches(active_run.token):
-                    stale_cleared = True
-                    continue
+            if active_run is None and not _lock_path().exists():
+                stale_cleared = True
+                continue
             return RunLockAcquireResult(
                 acquired=False,
                 active_run=active_run,

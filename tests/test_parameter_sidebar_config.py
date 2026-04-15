@@ -51,3 +51,20 @@ def test_build_pipeline_config_from_values_supports_custom_density_and_manual_sc
     assert config.scale_calibration.known_cone_height_m == 1.0
     assert config.scale_calibration.assumed_camera_height_m == 2.5
     assert config.manual_scale_override == 2.25
+
+
+def test_build_pipeline_config_from_values_ignores_hidden_scale_overrides_in_client_mode():
+    values = {
+        "sidebar_material_select": "Backfill 0–75 mm",
+        "sidebar_admin_mode": False,
+        "sidebar_cone_height": 1.0,
+        "sidebar_camera_height": 2.5,
+        "sidebar_manual_scale_enabled": True,
+        "sidebar_manual_scale_value": 9.5,
+    }
+
+    config = build_pipeline_config_from_values(values)
+
+    assert config.scale_calibration.known_cone_height_m == 0.75
+    assert config.scale_calibration.assumed_camera_height_m == 1.6
+    assert config.manual_scale_override is None

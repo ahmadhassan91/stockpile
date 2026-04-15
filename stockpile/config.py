@@ -28,6 +28,9 @@ class ConeDetectionConfig:
     min_aspect_ratio: float = 1.0
     max_aspect_ratio: float = 5.0
     min_solidity: float = 0.4
+    min_fill_ratio: float = 0.18
+    max_bbox_width_ratio: float = 0.22
+    max_bbox_height_ratio: float = 0.32
 
 
 @dataclass
@@ -37,6 +40,7 @@ class ColmapConfig:
     single_camera: bool = True
     camera_model: str = "SIMPLE_RADIAL"
     use_sequential_matching: bool = True
+    sequential_matching_min_frames: int = 120  # prefer video-aware matching once we have enough ordered frames
     use_gpu: bool = True
     use_gpu_matching: bool = True  # Falls back to CPU automatically if GPU matching fails.
     feature_num_threads: int = -1
@@ -67,6 +71,8 @@ class ScaleCalibrationConfig:
     max_plausible_scale: float = 20.0
     max_projection_distance: float = 1.0  # COLMAP units — reject far-field samples with inflated distances
     min_cone_pixel_height: int = 100  # reject small detections with noisy scale
+    projection_height_weight_cap: float = 3.0
+    projection_height_bias_corr_threshold: float = -0.5
     cone_position_percentile: float = 50.0
     cone_position_min_points: int = 3
     camera_height_ground_std_rel_max: float = 0.10
@@ -83,6 +89,7 @@ class GroundPlaneConfig:
     ransac_iterations: int = 1000
     above_ground_threshold: float = 0.10  # meters — raised from 0.05 to reduce ground noise misclassification
     cone_crop_margin_m: float = 0.75
+    max_cone_ground_disagreement_m: float = 0.50
     statistical_nb_neighbors: int = 20
     statistical_std_ratio: float = 2.0
     random_seed: int = 7
@@ -116,14 +123,17 @@ class VolumeConfig:
 @dataclass
 class QualityGateConfig:
     min_calibration_confidence_warn: float = 0.40
-    min_calibration_confidence_block: float = 0.25
+    min_calibration_confidence_block: float = 0.35
     min_unique_cones_warn: int = 3
     min_unique_cones_block: int = 2
     min_verified_calibration_confidence: float = 0.55
     max_verified_scale_disagreement: float = 1.8
     max_review_grade_unique_cones: int = 2
     max_scale_disagreement_warn: float = 1.5
-    max_scale_disagreement_block: float = 3.5
+    max_scale_disagreement_block: float = 3.0
+    max_detected_cones_per_frame_warn: int = 4
+    max_detected_cones_per_frame_block: int = 6
+    dense_cone_scale_disagreement_block: float = 2.25
     min_pile_points_warn: int = 5000
     min_pile_points_block: int = 1500
     min_grid_occupancy_warn_pct: float = 5.0

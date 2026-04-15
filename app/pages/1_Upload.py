@@ -28,8 +28,10 @@ from components.pipeline_presets import build_recommended_sidebar_overrides
 from components.reliability_status import classify_preflight_status, render_status_callout
 from components.run_guard import describe_active_run, read_active_run_lock
 from components.session_init import init_session_state
+from components.sidebar_nav import render_sidebar_nav
 
 init_session_state()
+render_sidebar_nav("Upload")
 st.header("1. Upload Video")
 
 active_run = read_active_run_lock()
@@ -529,9 +531,14 @@ st.session_state.pipeline_config = build_pipeline_config_from_state()
 
 
 # ── Video Upload ───────────────────────────────────────────────────────────────
+st.caption(
+    "Step 1: choose a video file. Step 2: click the **Upload** button inside the box. "
+    "Large clips can take 1 to 3 minutes before the settings review opens."
+)
 uploaded = st.file_uploader(
     "Upload a walkaround video of the stockpile",
     type=["mp4", "avi", "mov", "mkv"],
+    key="stockpile_video_upload",
 )
 
 if uploaded is not None:
@@ -653,6 +660,10 @@ if uploaded is not None:
 
     # Show the dialog if settings haven't been confirmed or dismissed yet
     if not st.session_state.get("settings_confirmed") and not st.session_state.get("settings_dialog_dismissed"):
+        # The dialog widgets are not part of the base session defaults, so seed them
+        # from the last known sidebar state before each render. Without this, a fresh
+        # page/session reconnect can fall back to the number_input minimums.
+        seed_settings_dialog_from_sidebar()
         settings_review_dialog(info, detections)
 
     # Prompt to reopen dialog if dismissed without confirming
@@ -734,6 +745,7 @@ elif st.session_state.get("video_path"):
     if st.session_state.get("settings_confirmed"):
         render_settings_summary(preflight_status=preflight_status)
     elif not st.session_state.get("settings_dialog_dismissed"):
+        seed_settings_dialog_from_sidebar()
         settings_review_dialog(info, detections)
     else:
         st.warning("A video is already loaded, but its settings still need confirmation.")
@@ -744,4 +756,7 @@ elif st.session_state.get("video_path"):
 else:
     st.session_state.settings_confirmed = False
     st.session_state["confirmed_pipeline_config"] = None
-    st.info("Please upload a video to get started.")
+    st.info(
+        "Select a video, then click the **Upload** button in the same box. "
+        "For large files, the browser may need 1 to 3 minutes before the review step opens."
+    )

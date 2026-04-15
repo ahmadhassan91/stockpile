@@ -75,6 +75,45 @@ def _mad_inlier_mask(values: np.ndarray, mad_multiplier: float) -> np.ndarray:
     return mask
 
 
+def _select_projection_scale_value(
+    scales: np.ndarray,
+    pixel_heights: np.ndarray,
+    config: ScaleCalibrationConfig,
+) -> tuple[float, str]:
+    """Pick a robust projection scale while compensating for far-cone bias.
+
+    Small distant detections tend to inflate scale. When we see a strong
+    negative correlation between pixel height and per-frame scale, bias
+    toward closer/larger detections with a capped height-weighted average.
+    """
+    median_scale = float(np.median(scales))
+    if len(scales) < 6:
+        return median_scale, "median"
+
+    height_std = float(np.std(pixel_heights))
+    scale_std = float(np.std(scales))
+    if height_std < 1e-6 or scale_std < 1e-6:
+        return median_scale, "median"
+
+    corr = float(np.corrcoef(pixel_heights, scales)[0, 1])
+    if not np.isfinite(corr) or corr > config.projection_height_bias_corr_threshold:
+        return median_scale, "median"
+
+    median_height = float(np.median(pixel_heights))
+    if median_height < 1e-6:
+        return median_scale, "median"
+
+    weights = np.clip(
+        pixel_heights / median_height,
+        0.5,
+        max(0.5, config.projection_height_weight_cap),
+    )
+    weighted_scale = float(np.average(scales, weights=weights))
+    if not np.isfinite(weighted_scale):
+        return median_scale, "median"
+    return weighted_scale, "height_weighted"
+
+
 def _select_cone_position_points(
     matched_positions: list[np.ndarray],
     matched_distances: list[float],
@@ -153,6 +192,7 @@ def calibrate_scale_projection(
         return _idx_to_colmap[best]
 
     per_frame_scales = []
+    per_frame_pixel_heights = []
     cone_positions = []
     notes: list[str] = []
     fallback_count = 0
@@ -240,6 +280,7 @@ def calibrate_scale_projection(
                 continue
 
             per_frame_scales.append(scale)
+            per_frame_pixel_heights.append(float(pixel_height))
             # Store a trimmed 3D position estimate as the cone location.
             cone_positions.append(np.median(cone_points, axis=0))
 
@@ -268,10 +309,23 @@ def calibrate_scale_projection(
             len(raw_scales),
         )
     filtered_scales = raw_scales[inlier_mask]
+    filtered_pixel_heights = np.asarray(per_frame_pixel_heights, dtype=float)[inlier_mask]
     filtered_positions = raw_positions[inlier_mask] if len(raw_positions) else raw_positions
 
-    # Use median across all frames for robustness
-    scale_factor = float(np.median(filtered_scales))
+    scale_factor, scale_method = _select_projection_scale_value(
+        filtered_scales,
+        filtered_pixel_heights,
+        config,
+    )
+    if scale_method == "height_weighted":
+        notes.append(
+            "Projection scale was height-weighted because smaller distant cone detections were inflating the median scale."
+        )
+        logger.info(
+            "Projection scale adjusted from median %.4f to height-weighted %.4f to reduce far-cone bias",
+            float(np.median(filtered_scales)),
+            scale_factor,
+        )
 
     # Confidence based on consistency and sample count
     if len(filtered_scales) >= 3:
@@ -614,25 +668,31 @@ def calibrate_scale(
         projection_result.camera_height_scale_factor = camera_result.scale_factor
         projection_result.camera_height_confidence = camera_result.confidence
         projection_result.notes.extend(camera_result.notes)
-
-        if camera_result.confidence < config.min_camera_height_confidence_for_crosscheck:
-            projection_result.notes.append(
-                "Camera-height cross-check was ignored because the fitted ground plane was not stable enough."
-            )
-            logger.info(
-                "Using projection scale %.4f without camera-height cross-check "
-                "(camera-height confidence %.2f < %.2f)",
-                projection_result.scale_factor,
-                camera_result.confidence,
-                config.min_camera_height_confidence_for_crosscheck,
-            )
-            return projection_result
-
         ratio = max(
             projection_result.scale_factor / camera_result.scale_factor,
             camera_result.scale_factor / projection_result.scale_factor,
         )
         projection_result.scale_disagreement_ratio = ratio
+
+        if camera_result.confidence < config.min_camera_height_confidence_for_crosscheck:
+            projection_result.notes.append(
+                "Camera-height cross-check was ignored because the fitted ground plane was not stable enough."
+            )
+            projection_result.notes.append(
+                "Projection and camera-height scale checks disagree"
+                if ratio >= config.max_method_disagreement_ratio
+                else "Projection and camera-height scale checks are broadly aligned"
+            )
+            logger.info(
+                "Using projection scale %.4f without camera-height cross-check "
+                "(camera-height confidence %.2f < %.2f, ratio %.2f)",
+                projection_result.scale_factor,
+                camera_result.confidence,
+                config.min_camera_height_confidence_for_crosscheck,
+                ratio,
+            )
+            return projection_result
+
         projection_result.notes.append(
             "Projection and camera-height scale checks disagree"
             if ratio >= config.max_method_disagreement_ratio

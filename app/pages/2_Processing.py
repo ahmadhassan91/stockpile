@@ -50,8 +50,10 @@ from components.run_guard import (
     try_acquire_run_lock,
 )
 from components.session_init import init_session_state
+from components.sidebar_nav import render_sidebar_nav
 
 init_session_state()
+render_sidebar_nav("Processing")
 st.header("2. Processing")
 
 STAGE_LABELS = {
@@ -117,22 +119,23 @@ if not st.session_state.get("settings_confirmed"):
     )
     st.stop()
 
-current_signature = tuple(
-    (key, st.session_state.get(key))
-    for key in SIDEBAR_SETTING_KEYS
-    if key != "sidebar_admin_mode"
-)
-confirmed_signature = st.session_state.get("confirmed_settings_signature")
-if confirmed_signature not in (None, current_signature):
-    st.session_state.settings_confirmed = False
-    st.session_state["confirmed_pipeline_config"] = None
-    st.error(
-        "Settings changed after the last confirmation. "
-        "Please return to Upload, review the current settings, and confirm again."
-    )
-    st.stop()
-
 confirmed_config = st.session_state.get("confirmed_pipeline_config")
+if confirmed_config is None:
+    current_signature = tuple(
+        (key, st.session_state.get(key))
+        for key in SIDEBAR_SETTING_KEYS
+        if key != "sidebar_admin_mode"
+    )
+    confirmed_signature = st.session_state.get("confirmed_settings_signature")
+    if confirmed_signature not in (None, current_signature):
+        st.session_state.settings_confirmed = False
+        st.session_state["confirmed_pipeline_config"] = None
+        st.error(
+            "Settings changed after the last confirmation. "
+            "Please return to Upload, review the current settings, and confirm again."
+        )
+        st.stop()
+
 if confirmed_config is not None:
     config = copy.deepcopy(confirmed_config)
     config_source = "confirmed_pipeline_config"

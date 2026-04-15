@@ -24,6 +24,13 @@ DEFAULT_SETTING_STATE = {
     "sidebar_admin_mode": False,
 }
 
+CLIENT_MODE_LOCKED_STATE = {
+    "sidebar_cone_height": DEFAULT_SETTING_STATE["sidebar_cone_height"],
+    "sidebar_camera_height": DEFAULT_SETTING_STATE["sidebar_camera_height"],
+    "sidebar_manual_scale_enabled": False,
+    "sidebar_manual_scale_value": DEFAULT_SETTING_STATE["sidebar_manual_scale_value"],
+}
+
 SIDEBAR_SETTING_KEYS = tuple(DEFAULT_SETTING_STATE.keys())
 PIPELINE_SIGNATURE_KEYS = tuple(
     key for key in SIDEBAR_SETTING_KEYS if key != "sidebar_admin_mode"
@@ -82,6 +89,12 @@ def build_pipeline_config_from_values(values: Mapping[str, Any]) -> PipelineConf
     for key in DEFAULT_SETTING_STATE:
         if key in values and values[key] is not None:
             state[key] = values[key]
+
+    admin_mode = bool(state.get("sidebar_admin_mode", False))
+    if not admin_mode:
+        # In client mode the scale controls are intentionally hidden, so we
+        # ignore any stale widget/session values that might survive reruns.
+        state.update(CLIENT_MODE_LOCKED_STATE)
 
     material, density = _resolve_material_density_from_values(state)
     config = PipelineConfig(

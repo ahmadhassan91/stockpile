@@ -4,6 +4,7 @@ import logging
 import os
 
 import streamlit as st
+from components.sidebar_nav import render_sidebar_nav
 
 # ── Logging setup ──────────────────────────────────────────────────────────────
 LOG_FILE = "/tmp/stockpile_app.log"
@@ -36,6 +37,8 @@ st.set_page_config(
     layout="wide",
     initial_sidebar_state="expanded",
 )
+
+render_sidebar_nav("app")
 
 st.title("Stockpile Weight Estimator")
 st.markdown("""

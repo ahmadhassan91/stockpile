@@ -22,6 +22,35 @@ class GroundPlaneResult:
     transform_matrix: np.ndarray
 
 
+def _resolve_ground_z(
+    ransac_ground_z: float,
+    cone_ground_z: float | None,
+    config: GroundPlaneConfig,
+) -> float:
+    """Reconcile RANSAC ground and cone-derived ground conservatively."""
+    if cone_ground_z is None:
+        return ransac_ground_z
+
+    disagreement = abs(cone_ground_z - ransac_ground_z)
+    if disagreement > config.max_cone_ground_disagreement_m:
+        logger.warning(
+            "Cone ground Z (%.3f) and RANSAC ground Z (%.3f) disagree by %.2f m — "
+            "keeping RANSAC value",
+            cone_ground_z,
+            ransac_ground_z,
+            disagreement,
+        )
+        return ransac_ground_z
+
+    blended = float(np.median([ransac_ground_z, cone_ground_z]))
+    logger.info(
+        "Cone ground Z agrees with RANSAC within %.2f m — blending to %.3f m",
+        disagreement,
+        blended,
+    )
+    return blended
+
+
 def load_and_scale_point_cloud(
     points_xyz: np.ndarray,
     points_rgb: np.ndarray | None,
@@ -242,13 +271,7 @@ def segment_pile(
             "Cone-based ground Z: %.3f m (from %d cones, RANSAC ground Z: %.3f)",
             cone_ground_z, len(cone_zs), ground_z,
         )
-        if abs(cone_ground_z - ground_z) > 0.5:
-            logger.warning(
-                "Cone ground Z (%.3f) and RANSAC ground Z (%.3f) disagree by %.2f m — "
-                "preferring cone-based value",
-                cone_ground_z, ground_z, abs(cone_ground_z - ground_z),
-            )
-            ground_z = cone_ground_z
+        ground_z = _resolve_ground_z(ground_z, cone_ground_z, config)
 
     # Shift so ground = 0
     pts[:, 2] -= ground_z

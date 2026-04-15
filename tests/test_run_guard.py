@@ -112,3 +112,39 @@ def test_run_guard_clears_stale_lock_before_acquiring(tmp_path, monkeypatch):
     active = read_active_run_lock()
     assert active is not None
     assert active.file_name == "fresh.mp4"
+
+
+def test_run_guard_clears_dead_pid_lock_before_acquiring(tmp_path, monkeypatch):
+    lock_path = tmp_path / "active-run.json"
+    monkeypatch.setenv("STOCKPILE_ACTIVE_RUN_LOCK_PATH", str(lock_path))
+
+    dead_pid_payload = {
+        "token": "dead-token",
+        "session_id": "old-session",
+        "upload_id": "old-upload",
+        "run_id": "old-run",
+        "run_attempt": 1,
+        "file_name": "stale.mp4",
+        "created_at_utc": datetime.now(timezone.utc).isoformat(),
+        "heartbeat_at_utc": datetime.now(timezone.utc).isoformat(),
+        "stage": "colmap_reconstruction",
+        "progress": 0.45,
+        "message": "Waiting",
+        "pid": 999999,
+    }
+    lock_path.write_text(json.dumps(dead_pid_payload), encoding="utf-8")
+
+    acquired = try_acquire_run_lock(
+        session_id="session-3",
+        upload_id="upload-3",
+        run_id="run-3",
+        run_attempt=1,
+        file_name="fresh-again.mp4",
+    )
+
+    assert acquired.acquired is True
+    assert acquired.stale_cleared is True
+
+    active = read_active_run_lock()
+    assert active is not None
+    assert active.file_name == "fresh-again.mp4"

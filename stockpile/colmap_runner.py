@@ -112,6 +112,14 @@ def _quality_to_sift_settings(quality: str) -> tuple[int, int]:
     return 2400, 8192
 
 
+def _should_prefer_sequential_matching(config: ColmapConfig, selected_image_count: int) -> bool:
+    """Return True when ordered video frames should use COLMAP's sequential matcher first."""
+    if not config.use_sequential_matching:
+        return False
+    threshold = max(2, int(getattr(config, "sequential_matching_min_frames", 1)))
+    return int(selected_image_count) >= threshold
+
+
 def _run_colmap_command(
     cmd: list[str],
     workspace_dir: Path,
@@ -577,7 +585,13 @@ def run_colmap_reconstruction(
         if progress_callback:
             progress_callback(0.2)
 
-        prefer_sequential = config.use_sequential_matching and selected_image_count > 300
+        prefer_sequential = _should_prefer_sequential_matching(config, selected_image_count)
+        logger.info(
+            "COLMAP matcher strategy: %s (%d selected images, sequential threshold=%d)",
+            "sequential" if prefer_sequential else "exhaustive",
+            selected_image_count,
+            int(getattr(config, "sequential_matching_min_frames", 1)),
+        )
         if prefer_sequential:
             _run_matcher_with_fallback(
                 "sequential_matcher",

@@ -12,8 +12,10 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).parent.parent))
 from components.reliability_status import classify_result_status, render_status_callout
 from components.session_init import init_session_state
+from components.sidebar_nav import render_sidebar_nav
 
 init_session_state()
+render_sidebar_nav("Results")
 st.header("3. Results")
 
 result = st.session_state.get("pipeline_result")

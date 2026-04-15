@@ -44,8 +44,10 @@ import sys
 sys.path.insert(0, str(Path(__file__).parent.parent))
 from components.reliability_status import classify_result_status
 from components.session_init import init_session_state
+from components.sidebar_nav import render_sidebar_nav
 
 init_session_state()
+render_sidebar_nav("Debug")
 
 st.header("4. Debug & Inspection")
 

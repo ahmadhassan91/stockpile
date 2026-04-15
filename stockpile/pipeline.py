@@ -86,6 +86,22 @@ class Pipeline:
         if message not in calibration.notes:
             calibration.notes.append(message)
 
+    def _should_use_cone_positions_for_segmentation(self, calibration: CalibrationResult | None) -> bool:
+        if calibration is None or not calibration.cone_3d_positions:
+            return False
+
+        gates = self.config.quality_gates
+        if calibration.confidence < gates.min_calibration_confidence_warn:
+            return False
+        if (
+            calibration.scale_disagreement_ratio is not None
+            and calibration.scale_disagreement_ratio > gates.max_scale_disagreement_warn
+        ):
+            return False
+        if calibration.max_detections_in_frame > gates.max_detected_cones_per_frame_warn:
+            return False
+        return True
+
     def _populate_calibration_diagnostics(
         self,
         calibration: CalibrationResult,
@@ -196,6 +212,22 @@ class Pipeline:
                 self._add_warning(
                     result,
                     f"Only {cal.num_cones_used} unique cone references were recovered; scale robustness is limited.",
+                )
+
+            if cal.max_detections_in_frame > gates.max_detected_cones_per_frame_warn:
+                self._add_warning(
+                    result,
+                    f"Cone detection peaked at {cal.max_detections_in_frame} references in one frame, which is unusually high for a field walkaround and may indicate red pile texture was mistaken for cones.",
+                )
+
+            if (
+                cal.max_detections_in_frame >= gates.max_detected_cones_per_frame_block
+                and cal.scale_disagreement_ratio is not None
+                and cal.scale_disagreement_ratio > gates.dense_cone_scale_disagreement_block
+            ):
+                self._add_blocker(
+                    result,
+                    f"Cone detection peaked at {cal.max_detections_in_frame} references in one frame and scale cross-checks still disagree by {cal.scale_disagreement_ratio:.1f}x, which is a strong sign of false-positive cone calibration.",
                 )
 
             borderline_multi_cone_review = (
@@ -421,22 +453,32 @@ class Pipeline:
 
             pcd = load_and_scale_point_cloud(all_xyz, all_rgb, scale_factor)
 
-            # Transform cone positions to scaled coordinates
-            scaled_cone_positions = [
-                pos * scale_factor for pos in result.cone_3d_positions
-            ]
+            # Transform cone positions to scaled coordinates. Only use them for
+            # segmentation/cropping when the calibration references themselves
+            # look stable enough; otherwise they can cut away good geometry.
+            scaled_cone_positions = [pos * scale_factor for pos in result.cone_3d_positions]
+            segmentation_cone_positions = (
+                scaled_cone_positions if self._should_use_cone_positions_for_segmentation(result.calibration) else None
+            )
+            if scaled_cone_positions and segmentation_cone_positions is None and result.calibration:
+                self._append_calibration_note(
+                    result.calibration,
+                    "Cone positions were ignored for ground alignment and footprint cropping because the calibration references were not stable enough.",
+                )
 
-            gp_result = segment_pile(pcd, self.config.ground_plane, scaled_cone_positions)
+            gp_result = segment_pile(pcd, self.config.ground_plane, segmentation_cone_positions)
             result.pile_cloud = gp_result.pile_cloud
             result.ground_cloud = gp_result.ground_cloud
 
             # Update cone positions to transformed coordinates
-            if scaled_cone_positions:
+            if segmentation_cone_positions:
                 T = gp_result.transform_matrix
                 result.cone_3d_positions = []
-                for pos in scaled_cone_positions:
+                for pos in segmentation_cone_positions:
                     p = np.append(pos, 1.0)
                     result.cone_3d_positions.append((T @ p)[:3])
+            else:
+                result.cone_3d_positions = []
 
             self._report("ground_plane", 1.0,
                          f"{len(gp_result.pile_cloud.points)} pile points segmented")
