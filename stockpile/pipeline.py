@@ -461,6 +461,29 @@ class Pipeline:
                 self._populate_calibration_diagnostics(calibration, cone_stats)
                 result.calibration = calibration
                 result.cone_3d_positions = calibration.cone_3d_positions
+
+                # P5: if the dedup step found more unique cones than the
+                # ceiling, the detector is eating the pile texture (e.g.
+                # reddish aggregate).  Override calibration to unit-scale
+                # and let the quality gates block the result.
+                cones_ceiling = int(getattr(
+                    self.config.cone_detection, "max_unique_cones_ceiling", 8
+                ))
+                if calibration.num_cones_used > cones_ceiling:
+                    logger.warning(
+                        "Cone dedup produced %d unique cones (ceiling %d) — "
+                        "treating entire detection as false-positive saturation.",
+                        calibration.num_cones_used,
+                        cones_ceiling,
+                    )
+                    # Keep the calibration object for diagnostics, but
+                    # zero out its confidence so the gates block it.
+                    calibration.confidence = 0.0
+                    calibration.notes.append(
+                        f"Detector saturation: {calibration.num_cones_used} unique cones "
+                        f"exceed the {cones_ceiling}-cone ceiling. Scale is unreliable."
+                    )
+
                 scale_factor = calibration.scale_factor
                 result.scale_factor_m_per_unit = scale_factor
                 result.scale_source = calibration.selected_method

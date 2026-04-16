@@ -33,8 +33,13 @@ class ConeDetectionConfig:
     max_bbox_height_ratio: float = 0.32
     # P1 reliability: frames with more detections than this are treated as
     # texture saturation (e.g. reddish aggregate) and their detections dropped.
-    # Real walkarounds rarely expose more than 3-4 cones to the camera at once.
-    max_detections_per_frame_cap: int = 4
+    # Real walkarounds rarely expose more than 2-3 cones to the camera at once.
+    max_detections_per_frame_cap: int = 3
+    # P5: if the dedup step produces more unique 3D cones than this ceiling,
+    # the entire detection is treated as false-positive saturation. Real sites
+    # have 2-6 physical cones; 29 "unique cones" means the detector is eating
+    # the pile's aggregate texture.
+    max_unique_cones_ceiling: int = 8
 
 
 @dataclass

@@ -708,9 +708,15 @@ if uploaded is not None:
         st.subheader("First Frame Preview")
 
         def _safe_rgb(img):
-            """Convert BGR→RGB and ensure a contiguous uint8 array for st.image."""
-            rgb = cv2.cvtColor(img, cv2.COLOR_BGR2RGB)
-            return np.ascontiguousarray(rgb, dtype=np.uint8)
+            """Encode BGR image as PNG bytes for st.image — works around
+            Streamlit 1.56+ failing to serve raw numpy arrays."""
+            success, buf = cv2.imencode(".png", img)
+            if success:
+                return buf.tobytes()
+            # Fallback: pass RGB numpy array directly
+            return np.ascontiguousarray(
+                cv2.cvtColor(img, cv2.COLOR_BGR2RGB), dtype=np.uint8
+            )
 
         col1, col2 = st.columns(2)
         with col1:
