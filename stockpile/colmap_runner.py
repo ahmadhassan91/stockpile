@@ -701,6 +701,12 @@ def run_colmap_reconstruction(
                 init_pair,
                 forced_pair_budget,
             )
+            # Clean sparse dir — the failed attempt may have left partial
+            # output that causes the retry to SIGABRT on project.ini write.
+            if sparse_dir.exists():
+                import shutil as _sh
+                _sh.rmtree(sparse_dir)
+            sparse_dir.mkdir(parents=True, exist_ok=True)
             _run_colmap_command(
                 mapper_cmd,
                 workspace_dir,
@@ -715,6 +721,12 @@ def run_colmap_reconstruction(
                 init_pair,
                 forced_pair_budget,
             )
+            # Clean sparse dir — the killed process leaves corrupt state
+            # that crashes the retry ("Could not open sparse/0/project.ini").
+            if sparse_dir.exists():
+                import shutil as _sh
+                _sh.rmtree(sparse_dir)
+            sparse_dir.mkdir(parents=True, exist_ok=True)
             _run_colmap_command(
                 mapper_cmd,
                 workspace_dir,
