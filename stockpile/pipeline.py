@@ -406,6 +406,7 @@ class Pipeline:
                 self.config.colmap_dir,
                 self.config.colmap,
                 progress_callback=lambda p: self._report("colmap_reconstruction", p),
+                priority_frame_names=set(cone_detections.keys()) if cone_detections else None,
             )
             result.sparse_model_dir = model_dir
 

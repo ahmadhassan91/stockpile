@@ -400,16 +400,52 @@ def _choose_mapper_init_pair(
     return first_valid_pair
 
 
-def _subsample_images_dir(images_dir: Path, max_frames: int) -> Path:
-    """If images_dir has more than max_frames images, copy an evenly-spaced
-    subset into a sibling directory and return that path instead."""
+def _subsample_images_dir(
+    images_dir: Path,
+    max_frames: int,
+    priority_names: set[str] | None = None,
+) -> Path:
+    """If images_dir has more than max_frames images, copy a subset into a
+    sibling directory and return that path instead.
+
+    When priority_names is provided (e.g. the set of cone-bearing frame
+    filenames), all matching frames are always included first; the remaining
+    budget is filled with evenly-spaced frames from the rest. This ensures
+    cone frames have direct COLMAP poses rather than relying on the
+    nearest-registered-frame fallback, which improves scale calibration
+    accuracy without changing the total COLMAP frame budget.
+    """
     import shutil
     all_images = sorted(images_dir.glob("*.jpg")) + sorted(images_dir.glob("*.png"))
     if len(all_images) <= max_frames:
         return images_dir
 
-    selected_idx = np.linspace(0, len(all_images) - 1, max_frames, dtype=int)
-    selected = [all_images[idx] for idx in selected_idx]
+    priority_set: set[str] = {Path(n).name for n in (priority_names or ())}
+
+    if priority_set:
+        priority_images = [img for img in all_images if img.name in priority_set]
+        non_priority = [img for img in all_images if img.name not in priority_set]
+    else:
+        priority_images = []
+        non_priority = all_images
+
+    # Reserve up to half the budget for priority frames so a pathologically
+    # large priority set never crowds out the structural frames COLMAP needs.
+    max_priority = min(len(priority_images), max_frames // 2)
+    if len(priority_images) > max_priority:
+        # If too many priority frames, pick an evenly-spaced subset of them
+        priority_idx = np.linspace(0, len(priority_images) - 1, max_priority, dtype=int)
+        priority_images = [priority_images[i] for i in priority_idx]
+
+    remaining_budget = max_frames - len(priority_images)
+    if remaining_budget > 0 and non_priority:
+        fill_idx = np.linspace(0, len(non_priority) - 1, remaining_budget, dtype=int)
+        fill_images = [non_priority[i] for i in fill_idx]
+    else:
+        fill_images = []
+
+    # Re-sort by filename so COLMAP receives frames in temporal order
+    selected = sorted(set(priority_images) | set(fill_images), key=lambda p: p.name)
 
     subset_dir = images_dir.parent / "images_colmap_subset"
     if subset_dir.exists():
@@ -420,8 +456,13 @@ def _subsample_images_dir(images_dir: Path, max_frames: int) -> Path:
         shutil.copy2(img, subset_dir / img.name)
 
     logger.info(
-        "Subsampled %d → %d frames for COLMAP (even spacing)",
-        len(all_images), len(selected),
+        "Subsampled %d → %d frames for COLMAP "
+        "(%d cone-priority + %d structural, from %d total)",
+        len(all_images),
+        len(selected),
+        len(priority_images),
+        len(fill_images),
+        len(all_images),
     )
     return subset_dir
 
@@ -540,13 +581,22 @@ def run_colmap_reconstruction(
     workspace_dir: Path,
     config: ColmapConfig | None = None,
     progress_callback=None,
+    priority_frame_names: set[str] | None = None,
 ) -> Path:
-    """Run an explicit COLMAP sparse reconstruction and return the model directory."""
+    """Run an explicit COLMAP sparse reconstruction and return the model directory.
+
+    priority_frame_names: optional set of image filenames (just the basename,
+    e.g. "frame_00123.jpg") that should be guaranteed to appear in the COLMAP
+    frame budget when subsampling is required. Typically the set of frames where
+    cones were detected, so scale calibration has direct camera poses for them.
+    """
     config = config or ColmapConfig()
     workspace_dir = Path(workspace_dir)
     workspace_dir.mkdir(parents=True, exist_ok=True)
 
-    images_dir = _subsample_images_dir(Path(images_dir), config.max_colmap_frames)
+    images_dir = _subsample_images_dir(
+        Path(images_dir), config.max_colmap_frames, priority_names=priority_frame_names
+    )
     selected_image_count = _count_images(images_dir)
 
     sparse_dir = workspace_dir / "sparse"
