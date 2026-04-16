@@ -7,6 +7,7 @@ from pathlib import Path
 
 import numpy as np
 import open3d as o3d
+from sklearn.cluster import DBSCAN
 
 from .colmap_runner import ColmapCamera, ColmapImage, ColmapPoint3D
 from .cone_detection import ConeDetection
@@ -435,36 +436,41 @@ def _deduplicate_positions(
     threshold: float,
     min_samples: int,
 ) -> list[np.ndarray]:
-    """Merge nearby 3D positions into unique cone locations."""
+    """Merge nearby 3D positions into unique cone locations using DBSCAN.
+
+    DBSCAN is deterministic and order-invariant, unlike the previous greedy
+    single-linkage approach which produced different results depending on the
+    order cone detections arrived from frame processing.
+    """
     if not positions:
         return []
 
+    pts = np.asarray(positions, dtype=float)
+    if len(pts) == 1:
+        # Single point always returned regardless of min_samples
+        return [pts[0]]
+
+    labels = DBSCAN(eps=threshold, min_samples=min_samples, metric="euclidean").fit_predict(pts)
+
     clusters: list[np.ndarray] = []
-    counts: list[int] = []
-    for pos in positions:
-        matched_index = None
-        for idx, centroid in enumerate(clusters):
-            if np.linalg.norm(pos - centroid) < threshold:
-                matched_index = idx
-                break
-        if matched_index is None:
-            clusters.append(np.asarray(pos, dtype=float).copy())
-            counts.append(1)
-            continue
+    unique_labels = set(labels)
+    unique_labels.discard(-1)  # noise points
 
-        counts[matched_index] += 1
-        clusters[matched_index] = clusters[matched_index] + (
-            np.asarray(pos, dtype=float) - clusters[matched_index]
-        ) / counts[matched_index]
-    kept_clusters = [
-        cluster for cluster, count in zip(clusters, counts)
-        if count >= min_samples
-    ]
-    if kept_clusters:
-        return kept_clusters
+    for label in sorted(unique_labels):
+        member_mask = labels == label
+        clusters.append(pts[member_mask].mean(axis=0))
 
-    dominant_index = int(np.argmax(counts))
-    return [clusters[dominant_index]]
+    if clusters:
+        return clusters
+
+    # All points were noise (too sparse) — fall back to the global centroid so
+    # at least one reference is available for scale calibration.
+    logger.debug(
+        "DBSCAN found no clusters in %d positions (eps=%.3f, min_samples=%d); "
+        "falling back to global centroid",
+        len(pts), threshold, min_samples,
+    )
+    return [pts.mean(axis=0)]
 
 
 def calibrate_scale_from_camera_height(
@@ -672,20 +678,18 @@ def calibrate_scale(
             projection_result.scale_factor / camera_result.scale_factor,
             camera_result.scale_factor / projection_result.scale_factor,
         )
-        projection_result.scale_disagreement_ratio = ratio
 
         if camera_result.confidence < config.min_camera_height_confidence_for_crosscheck:
+            # Camera-height plane fit was not stable — don't let its ratio penalise
+            # the quality gates.  scale_disagreement_ratio stays None so downstream
+            # warnings and review-grade checks are unaffected by a noisy cross-check.
             projection_result.notes.append(
-                "Camera-height cross-check was ignored because the fitted ground plane was not stable enough."
-            )
-            projection_result.notes.append(
-                "Projection and camera-height scale checks disagree"
-                if ratio >= config.max_method_disagreement_ratio
-                else "Projection and camera-height scale checks are broadly aligned"
+                "Camera-height cross-check was ignored because the fitted ground plane was not stable enough "
+                f"(confidence {camera_result.confidence:.2f} < {config.min_camera_height_confidence_for_crosscheck:.2f})."
             )
             logger.info(
                 "Using projection scale %.4f without camera-height cross-check "
-                "(camera-height confidence %.2f < %.2f, ratio %.2f)",
+                "(camera-height confidence %.2f < threshold %.2f, raw ratio %.2f — ratio NOT stored)",
                 projection_result.scale_factor,
                 camera_result.confidence,
                 config.min_camera_height_confidence_for_crosscheck,
@@ -693,6 +697,8 @@ def calibrate_scale(
             )
             return projection_result
 
+        # Camera-height is stable enough — record ratio so quality gates can act on it.
+        projection_result.scale_disagreement_ratio = ratio
         projection_result.notes.append(
             "Projection and camera-height scale checks disagree"
             if ratio >= config.max_method_disagreement_ratio
