@@ -1,5 +1,6 @@
 """Page 1: Video upload and configuration."""
 
+import base64
 import tempfile
 from pathlib import Path
 import re
@@ -707,29 +708,58 @@ if uploaded is not None:
     if frame is not None and isinstance(frame, np.ndarray) and frame.ndim >= 2:
         st.subheader("First Frame Preview")
 
-        def _safe_rgb(img):
-            """Encode BGR image as PNG bytes for st.image — works around
-            Streamlit 1.56+ failing to serve raw numpy arrays."""
-            success, buf = cv2.imencode(".png", img)
-            if success:
-                return buf.tobytes()
-            # Fallback: pass RGB numpy array directly
-            return np.ascontiguousarray(
-                cv2.cvtColor(img, cv2.COLOR_BGR2RGB), dtype=np.uint8
+        def _inline_image_html(img, caption: str, max_width_px: int = 720) -> str:
+            """Render a BGR image as an inline base64 data URL <img>.
+
+            This bypasses Streamlit's MediaFileManager entirely, which avoids the
+            'Image source error' failure caused by the reverse proxy not mapping
+            `/Results/media/*.jpg` back to Streamlit's real `/media/` endpoint.
+            The image is embedded directly in the HTML, so no network fetch is
+            required for it to render.
+            """
+            # Downscale oversized frames so the base64 payload stays reasonable
+            # (a full 1080x1920 frame would be ~3 MB base64).
+            h, w = img.shape[:2]
+            if w > max_width_px:
+                scale = max_width_px / w
+                new_size = (max_width_px, int(round(h * scale)))
+                img = cv2.resize(img, new_size, interpolation=cv2.INTER_AREA)
+
+            ok, buf = cv2.imencode(".jpg", img, [int(cv2.IMWRITE_JPEG_QUALITY), 85])
+            if not ok:
+                return ""
+            b64 = base64.b64encode(buf.tobytes()).decode("ascii")
+            # Escape caption for HTML since it is user/metadata-provided.
+            caption_html = (
+                caption.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
+            )
+            return (
+                f'<figure style="margin:0;text-align:center;">'
+                f'<img src="data:image/jpeg;base64,{b64}" '
+                f'style="max-width:100%;height:auto;border-radius:6px;" '
+                f'alt="{caption_html}" />'
+                f'<figcaption style="font-size:0.85em;color:#888;margin-top:4px;">'
+                f'{caption_html}</figcaption></figure>'
             )
 
         col1, col2 = st.columns(2)
         with col1:
-            st.image(_safe_rgb(frame), caption="Original Frame")
+            st.markdown(_inline_image_html(frame, "Original Frame"), unsafe_allow_html=True)
         with col2:
             if detections:
                 overlay = draw_cone_overlays(frame, detections)
-                st.image(
-                    _safe_rgb(overlay),
-                    caption=f"Cone Detection ({len(detections)} cones found)",
+                st.markdown(
+                    _inline_image_html(
+                        overlay,
+                        f"Cone Detection ({len(detections)} cones found)",
+                    ),
+                    unsafe_allow_html=True,
                 )
             else:
-                st.image(_safe_rgb(frame), caption="No cones detected")
+                st.markdown(
+                    _inline_image_html(frame, "No cones detected"),
+                    unsafe_allow_html=True,
+                )
                 st.warning(
                     "⚠️ No cones detected in the first frame. "
                     "Scale calibration may still work if cones appear clearly later, "
