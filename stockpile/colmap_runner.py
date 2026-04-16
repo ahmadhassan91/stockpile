@@ -558,6 +558,12 @@ def run_colmap_reconstruction(
 
         shutil.rmtree(sparse_dir)
     sparse_dir.mkdir(parents=True, exist_ok=True)
+    # Pre-create sparse/0/ so COLMAP's "keep reconstruction on timeout
+    # interrupt" path can write project.ini without crashing.  COLMAP
+    # normally creates this directory during the mapper run, but the
+    # timeout-save codepath assumes it already exists — causing a SIGABRT
+    # ("Could not open sparse/0/project.ini") on the NGC Docker image.
+    (sparse_dir / "0").mkdir(exist_ok=True)
 
     random_seed = int(config.random_seed)
     max_image_size, max_num_features = _quality_to_sift_settings(config.quality)
@@ -707,6 +713,7 @@ def run_colmap_reconstruction(
                 import shutil as _sh
                 _sh.rmtree(sparse_dir)
             sparse_dir.mkdir(parents=True, exist_ok=True)
+            (sparse_dir / "0").mkdir(exist_ok=True)
             _run_colmap_command(
                 mapper_cmd,
                 workspace_dir,
@@ -727,6 +734,7 @@ def run_colmap_reconstruction(
                 import shutil as _sh
                 _sh.rmtree(sparse_dir)
             sparse_dir.mkdir(parents=True, exist_ok=True)
+            (sparse_dir / "0").mkdir(exist_ok=True)
             _run_colmap_command(
                 mapper_cmd,
                 workspace_dir,
@@ -752,6 +760,7 @@ def run_colmap_reconstruction(
                 if sparse_dir.exists():
                     shutil.rmtree(sparse_dir)
                 sparse_dir.mkdir(parents=True, exist_ok=True)
+                (sparse_dir / "0").mkdir(exist_ok=True)
 
                 _run_colmap_command(
                     mapper_cmd,
