@@ -17,18 +17,18 @@ class FrameExtractionConfig:
 class ConeDetectionConfig:
     # HSV ranges for red/orange (two ranges to wrap hue circle)
     red_hue_low1: int = 0
-    red_hue_high1: int = 25
-    red_hue_low2: int = 160
+    red_hue_high1: int = 15       # P6: narrowed from 25 — excludes brownish-orange aggregate
+    red_hue_low2: int = 165       # P6: narrowed from 160 — excludes pinkish rock tones
     red_hue_high2: int = 180
-    saturation_min: int = 60
+    saturation_min: int = 85      # P6: raised from 60 — real cones are vivid (85-100%), aggregate is duller (40-70%)
     value_min: int = 60
     # Contour filtering
     min_area: int = 2000
     max_area: int = 200000
-    min_aspect_ratio: float = 1.0
+    min_aspect_ratio: float = 1.5  # P6: raised from 1.0 — real cones are tall/narrow (2:1-3.5:1), aggregate is squatter
     max_aspect_ratio: float = 5.0
-    min_solidity: float = 0.4
-    min_fill_ratio: float = 0.18
+    min_solidity: float = 0.65     # P6: raised from 0.4 — real cones are compact (0.7-0.95), aggregate has rougher edges
+    min_fill_ratio: float = 0.25   # P6: raised from 0.18 — real cones fill their bbox better than scattered texture
     max_bbox_width_ratio: float = 0.22
     max_bbox_height_ratio: float = 0.32
     # P1 reliability: frames with more detections than this are treated as
