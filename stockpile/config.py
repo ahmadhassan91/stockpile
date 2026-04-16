@@ -61,10 +61,13 @@ class ColmapConfig:
     # "Provided pair is unsuitable for initialization". Each attempt burns
     # num_trials * ~300ms before giving up. Previous values of 300/900 came
     # from a well-matched corpus; they were too generous for client videos
-    # where init-pair geometry is often degenerate. Revert to the earlier
-    # 80/420 budget and let the retry-without-forced-pair kick in sooner.
+    # where init-pair geometry is often degenerate.
+    # init_num_trials lowered from 300 → 80 to reduce wasted time.
+    # max_runtime_seconds stays at 900 for the UNFORCED retry — client
+    # videos (like the Backfill 0-75mm) can need 10+ min to map 300 frames.
+    # The forced-pair attempt uses forced_pair_max_runtime_seconds instead.
     mapper_init_num_trials: int = 80
-    mapper_max_runtime_seconds: int = 420
+    mapper_max_runtime_seconds: int = 900
     mapper_init_min_num_inliers: int = 30
     # Budget for the forced-pair attempt specifically. If the pair cannot
     # initialise within this window we skip straight to unforced mapping
