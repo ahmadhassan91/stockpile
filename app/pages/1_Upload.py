@@ -703,20 +703,26 @@ if uploaded is not None:
         )
 
     # ── First Frame Preview + Cone Detection ───────────────────────────────
-    if frame is not None:
+    if frame is not None and isinstance(frame, np.ndarray) and frame.ndim >= 2:
         st.subheader("First Frame Preview")
+
+        def _safe_rgb(img):
+            """Convert BGR→RGB and ensure a contiguous uint8 array for st.image."""
+            rgb = cv2.cvtColor(img, cv2.COLOR_BGR2RGB)
+            return np.ascontiguousarray(rgb, dtype=np.uint8)
+
         col1, col2 = st.columns(2)
         with col1:
-            st.image(cv2.cvtColor(frame, cv2.COLOR_BGR2RGB), caption="Original Frame")
+            st.image(_safe_rgb(frame), caption="Original Frame")
         with col2:
             if detections:
                 overlay = draw_cone_overlays(frame, detections)
                 st.image(
-                    cv2.cvtColor(overlay, cv2.COLOR_BGR2RGB),
+                    _safe_rgb(overlay),
                     caption=f"Cone Detection ({len(detections)} cones found)",
                 )
             else:
-                st.image(cv2.cvtColor(frame, cv2.COLOR_BGR2RGB), caption="No cones detected")
+                st.image(_safe_rgb(frame), caption="No cones detected")
                 st.warning(
                     "⚠️ No cones detected in the first frame. "
                     "Scale calibration may still work if cones appear clearly later, "
