@@ -5,6 +5,7 @@ from pathlib import Path
 import re
 
 import cv2
+import numpy as np
 import streamlit as st
 
 from stockpile.cone_detection import detect_cones, draw_cone_overlays
