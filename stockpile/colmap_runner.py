@@ -742,6 +742,31 @@ def run_colmap_reconstruction(
                 timeout=mapper_timeout_seconds,
             )
 
+        # The forced-pair mapper may exit normally (exit code 0) but only
+        # save project.ini when COLMAP's internal timer interrupts mapping.
+        # In that case _find_sparse_model_dir will fail. Detect this and
+        # retry without the forced pair before giving up.
+        forced_pair_produced_model = _is_colmap_model_dir(sparse_dir / "0")
+        if init_pair and not forced_pair_produced_model:
+            logger.warning(
+                "Mapper with forced pair %s exited but produced no binary model "
+                "(only project.ini — likely interrupted by internal timer). "
+                "Retrying without forced pair with full %ds budget.",
+                init_pair,
+                config.mapper_max_runtime_seconds,
+            )
+            if sparse_dir.exists():
+                import shutil as _sh
+                _sh.rmtree(sparse_dir)
+            sparse_dir.mkdir(parents=True, exist_ok=True)
+            (sparse_dir / "0").mkdir(exist_ok=True)
+            _run_colmap_command(
+                mapper_cmd,
+                workspace_dir,
+                "mapper_retry_no_model_from_forced_pair",
+                timeout=mapper_timeout_seconds,
+            )
+
         model_dir = _find_sparse_model_dir(sparse_dir)
         registered_images = len(_registered_image_names(model_dir))
         if selected_image_count > 0:
