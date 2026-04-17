@@ -7,102 +7,271 @@ import cv2
 import streamlit as st
 
 from stockpile.cone_detection import detect_cones, draw_cone_overlays
-from stockpile.config import DENSITY_RANGES, DENSITY_PRESETS
+from stockpile.config import DENSITY_PRESETS, DENSITY_RANGES
 from stockpile.frame_extraction import get_first_frame, get_video_info
 
 import sys
 sys.path.insert(0, str(Path(__file__).parent.parent))
-from components.parameter_sidebar import render_parameter_sidebar
+from components.parameter_sidebar import (
+    build_pipeline_config_from_state,
+    get_pipeline_setting_signature,
+    persist_pipeline_selection_metadata,
+    render_parameter_sidebar,
+)
 from components.session_init import init_session_state
 
 init_session_state()
 st.header("1. Upload Video")
 
-# Sidebar config — renders sidebar and seeds session state with selected material
-config = render_parameter_sidebar()
-st.session_state.pipeline_config = config
-
 PRESET_NAMES = list(DENSITY_PRESETS.keys())
+SETTING_KEY_MAP = {
+    "dialog_material_select": "sidebar_material_select",
+    "dialog_density_input": "sidebar_density_input",
+    "dialog_cone_height": "sidebar_cone_height",
+    "dialog_camera_height": "sidebar_camera_height",
+    "dialog_manual_scale_enabled": "sidebar_manual_scale_enabled",
+    "dialog_manual_scale_value": "sidebar_manual_scale_value",
+    "dialog_frame_interval": "sidebar_frame_interval",
+    "dialog_max_frames": "sidebar_max_frames",
+    "dialog_colmap_quality": "sidebar_colmap_quality",
+    "dialog_above_ground": "sidebar_above_ground",
+    "dialog_grid_resolution": "sidebar_grid_resolution",
+}
 
 
-# ── Material Confirmation Dialog ───────────────────────────────────────────────
-@st.dialog("🪨 Confirm Material & Density", width="large")
-def material_confirmation_dialog(current_material: str):
-    """Dialog shown after upload. User can pick material here and confirm."""
+def seed_settings_dialog_from_sidebar(force: bool = False):
+    """Copy sidebar values into the review dialog state."""
+    for dialog_key, sidebar_key in SETTING_KEY_MAP.items():
+        if force or dialog_key not in st.session_state:
+            st.session_state[dialog_key] = st.session_state.get(sidebar_key)
 
+
+def apply_dialog_settings():
+    """Apply the confirmed dialog values back into the sidebar state."""
+    for dialog_key, sidebar_key in SETTING_KEY_MAP.items():
+        st.session_state[sidebar_key] = st.session_state.get(dialog_key)
+
+    persist_pipeline_selection_metadata()
+    st.session_state.pipeline_config = build_pipeline_config_from_state()
+    st.session_state.settings_confirmed = True
+    st.session_state.settings_dialog_dismissed = False
+    st.session_state.confirmed_settings_signature = get_pipeline_setting_signature()
+
+
+def build_upload_setting_notes(video_info: dict | None, detections: list | None):
+    """Generate practical notes from the uploaded video and current dialog values."""
+    notes = [
+        "We can read the video duration, resolution, and whether cones are visible, "
+        "but material, cone size, and camera height still require user confirmation."
+    ]
+    warnings = []
+
+    interval = float(st.session_state.get("dialog_frame_interval", 0.25))
+    max_frames = int(st.session_state.get("dialog_max_frames", 800))
+    quality = st.session_state.get("dialog_colmap_quality", "medium")
+    manual_scale_enabled = bool(st.session_state.get("dialog_manual_scale_enabled", False))
+
+    if video_info:
+        estimated_frames = max(1, int(video_info["duration"] / max(interval, 0.01)))
+        used_frames = min(estimated_frames, max_frames)
+        notes.append(
+            f"At the current {interval:.2f}s frame interval, processing will use about "
+            f"{used_frames} frame(s)."
+        )
+        if estimated_frames > max_frames:
+            warnings.append(
+                f"This clip would yield about {estimated_frames} frames, so processing "
+                f"will cap at {max_frames}. Increase the cap only if you need more detail."
+            )
+        if video_info["duration"] < 20:
+            warnings.append(
+                "The clip is fairly short. Make sure the full base and perimeter of the pile are visible."
+            )
+        if min(video_info["width"], video_info["height"]) < 720:
+            warnings.append(
+                "The uploaded resolution is relatively low, so reconstruction detail may be limited."
+            )
+        elif video_info["width"] >= 1920 and video_info["height"] >= 1080 and quality != "high":
+            notes.append(
+                "This is a high-resolution clip. You can switch COLMAP quality to High for a slower but denser reconstruction."
+            )
+
+    if detections is not None:
+        if len(detections) == 0:
+            warnings.append(
+                "No red cones were detected in the first frame. Auto scale may fail unless cones become clearer later in the video."
+            )
+        else:
+            notes.append(
+                f"Detected {len(detections)} cone(s) in the first frame, so cone-based auto scale should be available."
+            )
+
+    if manual_scale_enabled:
+        notes.append("Manual scale override is enabled and will take priority over auto scale.")
+
+    return notes, warnings
+
+
+@st.dialog("Review Current Settings", width="large")
+def settings_review_dialog(video_info: dict | None, detections: list | None):
+    """Ask the user to confirm or adjust the current pipeline settings."""
     st.markdown(
-        "Please confirm the **material type** for this stockpile. "
-        "The bulk density is used to convert volume → weight."
+        "Please review the current pipeline settings for this upload before continuing."
     )
-    st.divider()
 
-    # Material selector inside the dialog
-    preset_options = PRESET_NAMES + ["Custom"]
-    default_idx = preset_options.index(current_material) if current_material in preset_options else 0
+    material_options = PRESET_NAMES + ["Custom"]
+    st.markdown("**Core settings**")
 
     chosen_material = st.selectbox(
         "Material type",
-        options=preset_options,
-        index=default_idx,
+        options=material_options,
         key="dialog_material_select",
     )
 
-    # Density display / input
     if chosen_material == "Custom":
-        chosen_density = st.number_input(
-            "Custom density (kg/m³)",
-            value=float(st.session_state.get("selected_density", 1600)),
+        st.number_input(
+            "Density (kg/m³)",
             min_value=100.0,
             max_value=5000.0,
             step=50.0,
-            key="dialog_custom_density",
+            key="dialog_density_input",
         )
-        st.caption(f"= {chosen_density / 1000:.3f} MT/m³")
+        st.caption(f"= {st.session_state['dialog_density_input'] / 1000:.3f} MT/m³")
     else:
         lo, hi = DENSITY_RANGES[chosen_material]
-        chosen_density = float(DENSITY_PRESETS[chosen_material])
-
+        st.session_state["dialog_density_input"] = float(DENSITY_PRESETS[chosen_material])
         col1, col2, col3 = st.columns(3)
         col1.metric("Min density", f"{lo/1000:.2f} MT/m³")
         col2.metric("Max density", f"{hi/1000:.2f} MT/m³")
-        col3.metric("Using (max)", f"{chosen_density/1000:.2f} MT/m³")
+        col3.metric("Using (max)", f"{DENSITY_PRESETS[chosen_material]/1000:.2f} MT/m³")
 
-        st.info(
-            f"ℹ️ We always use the **maximum bulk density** for the weight calculation. "
-            f"If your material is at the lower end of the range, the actual weight could be "
-            f"~{((hi - lo) / hi * 100):.0f}% lower."
+    col1, col2 = st.columns(2)
+    with col1:
+        st.number_input(
+            "Cone height (m)",
+            min_value=0.1,
+            max_value=2.0,
+            step=0.05,
+            key="dialog_cone_height",
+        )
+    with col2:
+        st.number_input(
+            "Camera height above ground (m)",
+            min_value=0.5,
+            max_value=3.0,
+            step=0.1,
+            key="dialog_camera_height",
         )
 
-    st.divider()
+    with st.expander("Advanced processing settings", expanded=False):
+        st.checkbox(
+            "Override auto-detected scale",
+            key="dialog_manual_scale_enabled",
+        )
+        if st.session_state.get("dialog_manual_scale_enabled"):
+            st.number_input(
+                "Manual scale factor (m / COLMAP unit)",
+                min_value=0.001,
+                max_value=200.0,
+                step=0.1,
+                key="dialog_manual_scale_value",
+            )
 
+        st.slider(
+            "Frame interval (sec)",
+            min_value=0.1,
+            max_value=2.0,
+            step=0.05,
+            key="dialog_frame_interval",
+        )
+        st.number_input(
+            "Max frames",
+            min_value=100,
+            max_value=2000,
+            step=100,
+            key="dialog_max_frames",
+        )
+        st.select_slider(
+            "COLMAP quality",
+            options=["low", "medium", "high"],
+            key="dialog_colmap_quality",
+        )
+        st.slider(
+            "Min pile height above ground (m)",
+            min_value=0.01,
+            max_value=0.5,
+            step=0.01,
+            key="dialog_above_ground",
+        )
+        st.slider(
+            "Grid resolution (m)",
+            min_value=0.01,
+            max_value=0.5,
+            step=0.01,
+            key="dialog_grid_resolution",
+        )
+
+    notes, warnings = build_upload_setting_notes(video_info, detections)
+    if notes:
+        st.info("\n".join(f"- {note}" for note in notes))
+    if warnings:
+        st.warning("\n".join(f"- {warning}" for warning in warnings))
+
+    st.divider()
     col_confirm, col_cancel = st.columns([2, 1])
     with col_confirm:
         if st.button(
-            f"✅ Confirm — {chosen_material}",
+            "✅ Continue With These Settings",
             type="primary",
             use_container_width=True,
-            key="dialog_confirm_btn",
+            key="dialog_confirm_settings_btn",
         ):
-            # Save the dialog selection back to session state
-            st.session_state["selected_material"] = chosen_material
-            st.session_state["selected_density"] = chosen_density
-            st.session_state["sidebar_material_select"] = chosen_material
-            if chosen_material == "Custom":
-                st.session_state["sidebar_density_input"] = float(chosen_density)
-            st.session_state["material_confirmed"] = True
-
-            # Patch the pipeline config density with the dialog's choice
-            if st.session_state.get("pipeline_config"):
-                st.session_state.pipeline_config.material_density = chosen_density
-                st.session_state.pipeline_config.material_name = (
-                    chosen_material if chosen_material != "Custom" else "custom"
-                )
+            apply_dialog_settings()
             st.rerun()
-
     with col_cancel:
-        if st.button("✖ Cancel", use_container_width=True, key="dialog_cancel_btn"):
-            st.session_state["dialog_dismissed"] = True
+        if st.button(
+            "✖ Review Later",
+            use_container_width=True,
+            key="dialog_cancel_settings_btn",
+        ):
+            st.session_state.settings_dialog_dismissed = True
             st.rerun()
+
+
+def render_settings_summary():
+    """Render a compact summary of the confirmed settings."""
+    config = st.session_state.get("pipeline_config")
+    manual_scale = st.session_state.get("manual_scale_override")
+    if config is None:
+        return
+
+    density_mt = config.material_density / 1000
+    summary_lines = [
+        f"**Material:** {st.session_state.get('selected_material', config.material_name)}",
+        f"**Density:** {density_mt:.2f} MT/m³ ({config.material_density:.0f} kg/m³)",
+        f"**Cone height:** {config.scale_calibration.known_cone_height_m:.2f} m",
+        f"**Camera height:** {config.scale_calibration.assumed_camera_height_m:.2f} m",
+        f"**Frame interval:** {config.frame_extraction.interval_sec:.2f} s",
+        f"**COLMAP quality:** {config.colmap.quality.title()}",
+    ]
+    if manual_scale is not None:
+        summary_lines.append(f"**Manual scale override:** {manual_scale:.4f} m/unit")
+
+    st.success("✅ Settings reviewed for this upload.")
+    st.markdown("  \n".join(summary_lines))
+
+
+# Sidebar config — renders sidebar and seeds session state with selected material
+config = render_parameter_sidebar()
+current_signature = get_pipeline_setting_signature()
+if (
+    st.session_state.get("settings_confirmed")
+    and st.session_state.get("confirmed_settings_signature") not in (None, current_signature)
+):
+    st.session_state.settings_confirmed = False
+    st.session_state.settings_dialog_dismissed = False
+
+st.session_state.pipeline_config = build_pipeline_config_from_state()
 
 
 # ── Video Upload ───────────────────────────────────────────────────────────────
@@ -115,11 +284,13 @@ if uploaded is not None:
     # Reset confirmation each time a new file is dropped
     is_new_file = st.session_state.get("last_uploaded_name") != uploaded.name
     if is_new_file:
-        st.session_state["material_confirmed"] = False
-        st.session_state["dialog_dismissed"] = False
+        st.session_state.settings_confirmed = False
+        st.session_state.settings_dialog_dismissed = False
+        st.session_state.confirmed_settings_signature = None
         st.session_state["last_uploaded_name"] = uploaded.name
         st.session_state["_upload_processed"] = False
         st.session_state["video_path"] = None
+        seed_settings_dialog_from_sidebar(force=True)
 
     # ── Write + process only once per uploaded file ────────────────────────
     if not st.session_state.get("_upload_processed"):
@@ -147,63 +318,59 @@ if uploaded is not None:
                 st.error(f"Could not read first frame: {e}")
 
             st.write("Running cone detection...")
+            detections = []
             if frame is not None:
                 try:
-                    detections = detect_cones(frame, config.cone_detection)
+                    detections = detect_cones(frame, st.session_state.pipeline_config.cone_detection)
                     st.session_state["_cone_detections"] = detections
                 except Exception as e:
                     st.error(f"Cone detection failed: {e}")
+            else:
+                st.session_state["_cone_detections"] = []
 
             status.update(label="Video ready!", state="complete", expanded=False)
             st.session_state["_upload_processed"] = True
-        info = st.session_state.get("_video_info")
-        frame = st.session_state.get("_first_frame")
-        detections = st.session_state.get("_cone_detections", [])
 
-    # Show the dialog if material hasn't been confirmed or dismissed yet
-    if not st.session_state.get("material_confirmed") and not st.session_state.get("dialog_dismissed"):
-        active_material = st.session_state.get("selected_material", PRESET_NAMES[0])
-        material_confirmation_dialog(active_material)
+    info = st.session_state.get("_video_info")
+    frame = st.session_state.get("_first_frame")
+    detections = st.session_state.get("_cone_detections", [])
 
-    # Prompt to open dialog if dismissed without confirming
-    if not st.session_state.get("material_confirmed") and st.session_state.get("dialog_dismissed"):
-        st.warning(
-            "⚠️ Material not confirmed. Please select your material type before processing."
-        )
-        if st.button("🪨 Select Material", type="primary", key="reopen_after_dismiss_btn"):
-            st.session_state["dialog_dismissed"] = False
+    # Show the dialog if settings haven't been confirmed or dismissed yet
+    if not st.session_state.get("settings_confirmed") and not st.session_state.get("settings_dialog_dismissed"):
+        settings_review_dialog(info, detections)
+
+    # Prompt to reopen dialog if dismissed without confirming
+    if not st.session_state.get("settings_confirmed") and st.session_state.get("settings_dialog_dismissed"):
+        st.warning("⚠️ Settings have not been confirmed for this upload yet.")
+        if st.button("⚙️ Review Current Settings", type="primary", key="reopen_settings_review_btn"):
+            seed_settings_dialog_from_sidebar(force=True)
+            st.session_state.settings_dialog_dismissed = False
             st.rerun()
 
-    # ── Confirmed banner ───────────────────────────────────────────────────
-    confirmed_material = st.session_state.get("selected_material", PRESET_NAMES[0])
-    confirmed_density = st.session_state.get("selected_density", DENSITY_PRESETS[PRESET_NAMES[0]])
-
-    if st.session_state.get("material_confirmed"):
+    if st.session_state.get("settings_confirmed"):
         col_banner, col_change = st.columns([4, 1])
         with col_banner:
-            st.success(
-                f"✅ **{confirmed_material}** — "
-                f"density: **{confirmed_density/1000:.2f} MT/m³** ({confirmed_density:.0f} kg/m³)"
-            )
+            render_settings_summary()
         with col_change:
-            if st.button("✏️ Change", use_container_width=True, key="reopen_dialog_btn"):
-                st.session_state["material_confirmed"] = False
+            if st.button("✏️ Change", use_container_width=True, key="change_settings_review_btn"):
+                seed_settings_dialog_from_sidebar(force=True)
+                st.session_state.settings_confirmed = False
+                st.session_state.settings_dialog_dismissed = False
                 st.rerun()
 
     # ── Video Info ─────────────────────────────────────────────────────────
-    info = st.session_state.get("_video_info")
     if info:
         col1, col2, col3, col4 = st.columns(4)
         col1.metric("Duration", f"{info['duration']:.1f}s")
         col2.metric("FPS", f"{info['fps']:.1f}")
         col3.metric("Resolution", f"{info['width']}x{info['height']}")
-        estimated_frames = int(info["duration"] / config.frame_extraction.interval_sec)
-        col4.metric("Est. Frames", str(min(estimated_frames, config.frame_extraction.max_frames)))
+        estimated_frames = int(info["duration"] / st.session_state.pipeline_config.frame_extraction.interval_sec)
+        col4.metric(
+            "Est. Frames",
+            str(min(estimated_frames, st.session_state.pipeline_config.frame_extraction.max_frames)),
+        )
 
     # ── First Frame Preview + Cone Detection ───────────────────────────────
-    frame = st.session_state.get("_first_frame")
-    detections = st.session_state.get("_cone_detections", [])
-
     if frame is not None:
         st.subheader("First Frame Preview")
         col1, col2 = st.columns(2)
@@ -219,25 +386,26 @@ if uploaded is not None:
             else:
                 st.image(cv2.cvtColor(frame, cv2.COLOR_BGR2RGB), caption="No cones detected")
                 st.warning(
-                    "⚠️ No red cones detected in the first frame. "
-                    "Make sure red traffic cones are clearly visible in the video. "
-                    "You can adjust HSV detection parameters in the sidebar, "
-                    "or use the manual scale override."
+                    "⚠️ No cones detected in the first frame. "
+                    "Scale calibration may still work if cones appear clearly later, "
+                    "but manual scale override is the safer fallback."
                 )
 
         if detections:
             st.success(
                 f"✅ Detected **{len(detections)} cone(s)** in the first frame. "
-                "Scale calibration should work correctly. Proceed to the **Processing** page."
+                "Cone-based scaling should be available."
             )
 
 elif st.session_state.get("video_path"):
-    confirmed_material = st.session_state.get("selected_material", PRESET_NAMES[0])
-    confirmed_density = st.session_state.get("selected_density", DENSITY_PRESETS[PRESET_NAMES[0]])
-    st.info(
-        f"Video already loaded.  \n"
-        f"Current material: **{confirmed_material}** at **{confirmed_density/1000:.2f} MT/m³**"
-    )
+    if st.session_state.get("settings_confirmed"):
+        render_settings_summary()
+    else:
+        st.warning("A video is already loaded, but its settings still need confirmation.")
+        if st.button("⚙️ Review Current Settings", type="primary", key="reopen_loaded_video_settings_btn"):
+            seed_settings_dialog_from_sidebar(force=True)
+            st.session_state.settings_dialog_dismissed = False
+            st.rerun()
 else:
-    st.session_state["material_confirmed"] = False
+    st.session_state.settings_confirmed = False
     st.info("Please upload a video to get started.")
