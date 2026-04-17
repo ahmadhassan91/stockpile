@@ -74,6 +74,8 @@ config.manual_scale_override = manual_scale
 # Show current settings
 with st.expander("Current Settings"):
     st.write(f"- **Material**: {config.material_name} ({config.material_density:.0f} kg/m³)")
+    if st.session_state.get("recommended_processing_profile"):
+        st.write(f"- **Processing profile**: {st.session_state['recommended_processing_profile']}")
     st.write(f"- **Cone height**: {config.scale_calibration.known_cone_height_m:.2f} m")
     st.write(f"- **Camera height**: {config.scale_calibration.assumed_camera_height_m:.2f} m")
     st.write(f"- **Frame interval**: {config.frame_extraction.interval_sec:.1f}s")
