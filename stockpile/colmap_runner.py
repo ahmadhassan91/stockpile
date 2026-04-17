@@ -740,6 +740,11 @@ def run_colmap_reconstruction(
                 ]
             )
         forced_pair_subprocess_timeout = forced_pair_budget + 60
+        # P9: track whether the currently-produced sparse model was built with
+        # the forced init pair. As soon as we fall through to a retry that uses
+        # `mapper_cmd` (no forced pair) this flips False, so the later
+        # low-registration handler does not re-run an identical command.
+        forced_pair_active = bool(init_pair)
         try:
             _run_colmap_command(
                 mapper_cmd_with_pair,
@@ -770,6 +775,7 @@ def run_colmap_reconstruction(
                 "mapper_retry_without_fixed_pair",
                 timeout=mapper_timeout_seconds,
             )
+            forced_pair_active = False
         except subprocess.TimeoutExpired:
             if not init_pair:
                 raise
@@ -791,13 +797,14 @@ def run_colmap_reconstruction(
                 "mapper_retry_after_forced_pair_timeout",
                 timeout=mapper_timeout_seconds,
             )
+            forced_pair_active = False
 
         # The forced-pair mapper may exit normally (exit code 0) but only
         # save project.ini when COLMAP's internal timer interrupts mapping.
         # In that case _find_sparse_model_dir will fail. Detect this and
         # retry without the forced pair before giving up.
         forced_pair_produced_model = _is_colmap_model_dir(sparse_dir / "0")
-        if init_pair and not forced_pair_produced_model:
+        if forced_pair_active and not forced_pair_produced_model:
             logger.warning(
                 "Mapper with forced pair %s exited but produced no binary model "
                 "(only project.ini — likely interrupted by internal timer). "
@@ -816,12 +823,16 @@ def run_colmap_reconstruction(
                 "mapper_retry_no_model_from_forced_pair",
                 timeout=mapper_timeout_seconds,
             )
+            forced_pair_active = False
 
         model_dir = _find_sparse_model_dir(sparse_dir)
         registered_images = len(_registered_image_names(model_dir))
         if selected_image_count > 0:
             registered_ratio = registered_images / selected_image_count
-            if registered_ratio < float(config.min_registered_image_ratio) and init_pair:
+            # Only retry the low-registration fallback when the current model
+            # was actually built with the forced init pair. Retrying an
+            # already-unforced run wastes minutes and produces the same result.
+            if registered_ratio < float(config.min_registered_image_ratio) and forced_pair_active:
                 logger.warning(
                     "Mapper registered only %d/%d images (%.1f%%) with fixed init pair %s; "
                     "retrying without forced pair.",
@@ -843,15 +854,36 @@ def run_colmap_reconstruction(
                     "mapper_retry_low_registration",
                     timeout=mapper_timeout_seconds,
                 )
+                forced_pair_active = False
                 model_dir = _find_sparse_model_dir(sparse_dir)
                 registered_images = len(_registered_image_names(model_dir))
                 registered_ratio = registered_images / selected_image_count
 
-            if registered_ratio < float(config.min_registered_image_ratio):
+            # Two-tier stability floor (P9). Below the block floor the sparse
+            # model is too incomplete to trust at all. Between the block and
+            # the soft floor we let the pipeline continue — downstream
+            # calibration and volume gates will catch bad reconstructions —
+            # but we log loudly so the UI can show a coverage warning.
+            block_floor = float(getattr(
+                config, "min_registered_image_ratio_block", 0.35
+            ))
+            warn_floor = float(config.min_registered_image_ratio)
+            if registered_ratio < block_floor:
                 raise RuntimeError(
                     f"Only {registered_images}/{selected_image_count} images registered "
-                    f"({registered_ratio:.1%}), below the stability floor "
-                    f"({config.min_registered_image_ratio:.0%})."
+                    f"({registered_ratio:.1%}), below the hard reconstruction floor "
+                    f"({block_floor:.0%}). The sparse model is too incomplete to trust; "
+                    "re-capture the video with a steadier, more continuous walk around the pile."
+                )
+            if registered_ratio < warn_floor:
+                logger.warning(
+                    "COLMAP registered only %d/%d images (%.1f%%), below the %.0f%% soft floor. "
+                    "Proceeding with reduced-coverage model — downstream quality gates will decide "
+                    "whether the result is publishable.",
+                    registered_images,
+                    selected_image_count,
+                    registered_ratio * 100,
+                    warn_floor * 100,
                 )
             logger.info(
                 "COLMAP registered %d/%d images (%.1f%%) with %d verified pairs.",

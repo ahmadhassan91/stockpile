@@ -59,7 +59,15 @@ class ColmapConfig:
     max_num_matches: int = 8192
     max_num_features_cap: int = 8192
     min_geometric_matches_for_mapper: int = 20
+    # Registration ratio thresholds for the COLMAP sparse reconstruction.
+    # P9: split into a hard block floor + a soft warn floor. Previously a single
+    # 0.70 floor caused hard failures on borderline videos where the sparse
+    # model was still usable (e.g. 138 / 300 = 46 % registered gives a complete
+    # pile reconstruction). Below min_registered_image_ratio_block (0.35) the
+    # model is genuinely too incomplete to trust; between the two thresholds we
+    # surface a quality warning and let the downstream calibration gates decide.
     min_registered_image_ratio: float = 0.70
+    min_registered_image_ratio_block: float = 0.35
     min_init_pair_inliers: int = 40
     min_init_pair_frame_gap: int = 12
     # P2 reliability: the forced-pair mapper has been failing ~4x/day with

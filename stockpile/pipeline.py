@@ -38,6 +38,8 @@ class PipelineResult:
     num_frames_with_cones: int = 0
     num_colmap_points: int = 0
     num_colmap_images: int = 0
+    num_colmap_images_submitted: int = 0
+    colmap_registration_ratio: float | None = None
     calibration: CalibrationResult | None = None
     volume: VolumeResult | None = None
     weight_kg: float = 0.0
@@ -136,6 +138,23 @@ class Pipeline:
     def _assess_measurement_quality(self, result: PipelineResult):
         gates = self.config.quality_gates
         manual_scale = self.config.manual_scale_override is not None
+
+        # P9: surface a warning when the sparse reconstruction only registered
+        # a fraction of the submitted frames. The hard floor is enforced inside
+        # run_colmap_reconstruction (anything below block_floor raises); here
+        # we flag the soft-floor band so the user knows coverage was limited
+        # even if downstream calibration passed.
+        colmap_ratio = result.colmap_registration_ratio
+        colmap_warn_floor = float(self.config.colmap.min_registered_image_ratio)
+        if colmap_ratio is not None and colmap_ratio < colmap_warn_floor:
+            self._add_warning(
+                result,
+                f"COLMAP registered only {result.num_colmap_images}/"
+                f"{result.num_colmap_images_submitted} frames "
+                f"({colmap_ratio:.0%}); the reconstruction coverage is below the "
+                f"{colmap_warn_floor:.0%} soft floor. "
+                "Cross-check the 3D view before reporting — parts of the pile may be under-sampled.",
+            )
 
         pile_pts = np.asarray(result.pile_cloud.points) if result.pile_cloud else np.empty((0, 3))
         pile_count = len(pile_pts)
@@ -421,6 +440,25 @@ class Pipeline:
             points3d = read_points3d_binary(model_dir / "points3D.bin")
             result.num_colmap_points = len(points3d)
             result.num_colmap_images = len(images)
+
+            # P9 reconstruction-coverage tracking. We count how many images
+            # were actually submitted to COLMAP (i.e. after subsampling) so
+            # the UI can warn when the sparse model registered only a
+            # fraction of them.
+            subset_dir = self.config.images_dir.parent / "images_colmap_subset"
+            if subset_dir.exists() and subset_dir.is_dir():
+                submitted = sum(
+                    1 for p in subset_dir.iterdir()
+                    if p.suffix.lower() in (".jpg", ".jpeg", ".png")
+                )
+            else:
+                submitted = len(images)
+            result.num_colmap_images_submitted = submitted
+            if submitted > 0:
+                result.colmap_registration_ratio = len(images) / submitted
+            else:
+                result.colmap_registration_ratio = None
+
             cone_stats = summarize_cone_observations(
                 cone_detections,
                 {image.name for image in images.values()},
