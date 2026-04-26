@@ -1,0 +1,611 @@
+// !$*UTF8*$!
+{
+	archiveVersion = 1;
+	classes = {
+	};
+	objectVersion = 77;
+	objects = {
+
+/* Begin PBXBuildFile section */
+		0D4BC7C8B7D7C56DBAA17EC1 /* StockpileProcessingRuntime in Frameworks */ = {isa = PBXBuildFile; productRef = F69EBDCA80A02265CA95003F /* StockpileProcessingRuntime */; };
+		11A3D4F3E6AF79DB1CFA488C /* StockpileOperatorDashboard in Frameworks */ = {isa = PBXBuildFile; productRef = 0FF0B55E7E1C00ED6B15CE44 /* StockpileOperatorDashboard */; };
+		3149C00435B65FBA5FB473DF /* StockpileMobileAPI in Frameworks */ = {isa = PBXBuildFile; productRef = 936314F4A98413A5648BC97A /* StockpileMobileAPI */; };
+		3549F80BE9016DE789EA7017 /* StockpileCameraCapture in Frameworks */ = {isa = PBXBuildFile; productRef = A782C45CE31838BE5B3E5158 /* StockpileCameraCapture */; };
+		428FB210D6A5BBFF8E5E77F1 /* Assets.xcassets in Resources */ = {isa = PBXBuildFile; fileRef = 87BC667303FBD08B60B31208 /* Assets.xcassets */; };
+		56E1F93BBCFC2AD3D43723C2 /* CaptureFeatureView.swift in Sources */ = {isa = PBXBuildFile; fileRef = C2F2F54400C25056B7B66375 /* CaptureFeatureView.swift */; };
+		5B9C7D1F9F4DAC5EAAF17D3A /* StockpileCaptureAppDelegate.swift in Sources */ = {isa = PBXBuildFile; fileRef = AD848DF11FBB1B1A4DB78B7D /* StockpileCaptureAppDelegate.swift */; };
+		5CEDDAF5C56A978BC84053F1 /* StockpileAppConfiguration.swift in Sources */ = {isa = PBXBuildFile; fileRef = EAC745728F6E0CAA2FECB4AA /* StockpileAppConfiguration.swift */; };
+		8351E3B556D363657CCE3E33 /* StockpileMobileFirstCapture in Frameworks */ = {isa = PBXBuildFile; productRef = 2A6EF7DFD6FF3AF5256E7A92 /* StockpileMobileFirstCapture */; };
+		843DFC44A99796302191BF0D /* StockpileDesignSystem in Frameworks */ = {isa = PBXBuildFile; productRef = BE7E629848ACF03F6F7D7DB5 /* StockpileDesignSystem */; };
+		8BB3DEAA3CA590DF1F4E3F6B /* StockpileUploadPipeline in Frameworks */ = {isa = PBXBuildFile; productRef = F4AED32D9399ACABFEA0EEEA /* StockpileUploadPipeline */; };
+		8DDFF33D25F6AA5A10EC6DCB /* CaptureFeatureStore.swift in Sources */ = {isa = PBXBuildFile; fileRef = BE5AB42DC170B5F3B3BADEEC /* CaptureFeatureStore.swift */; };
+		94779AD135C5686724EF1658 /* CaptureFeatureLocalQuickEstimate.swift in Sources */ = {isa = PBXBuildFile; fileRef = C7A6FF2C70C964891BA317DF /* CaptureFeatureLocalQuickEstimate.swift */; };
+		99F7B66ECE75301CDB36F75B /* StockpileRootView.swift in Sources */ = {isa = PBXBuildFile; fileRef = AC93215E6EF12CE0665E6E36 /* StockpileRootView.swift */; };
+		A705267AAC34BED2C24045E0 /* CaptureReferenceEvidenceExtractor.swift in Sources */ = {isa = PBXBuildFile; fileRef = B1DB615B5E87BB7FAC0835BA /* CaptureReferenceEvidenceExtractor.swift */; };
+		AFE494103B67460B56A068D5 /* StockpileAppSession.swift in Sources */ = {isa = PBXBuildFile; fileRef = 6568112C3BAC37CEE577E0F6 /* StockpileAppSession.swift */; };
+		BDC90D1745849879B6E8456F /* StockpileResultModelFactory.swift in Sources */ = {isa = PBXBuildFile; fileRef = F6AE3FB8971E0FD5FA2DD154 /* StockpileResultModelFactory.swift */; };
+		D2265060C4C1E6420C503932 /* StockpileCaptureFlow in Frameworks */ = {isa = PBXBuildFile; productRef = C04DF71F99558484CB08E013 /* StockpileCaptureFlow */; };
+		DD1BBBE05A4CD4D345D52202 /* StockpileResultsUI in Frameworks */ = {isa = PBXBuildFile; productRef = E4EECD8B3FF9D65B3947634C /* StockpileResultsUI */; };
+		DF5EF99A5806238B19AF55A5 /* StockpileCaptureApp.swift in Sources */ = {isa = PBXBuildFile; fileRef = DF5E3581EC84A00B74228EA9 /* StockpileCaptureApp.swift */; };
+		E4A9811DF48A3D6095A76005 /* StockpileOperationalStatusBannerState.swift in Sources */ = {isa = PBXBuildFile; fileRef = 29718A07DD5FC9FE8F92ADEB /* StockpileOperationalStatusBannerState.swift */; };
+		F1F02B8B1179A957BD80B533 /* StockpileAppShell in Frameworks */ = {isa = PBXBuildFile; productRef = FE5EA70D27BEB5713C1CB0AC /* StockpileAppShell */; };
+		F24313EFB98D44A70ED340DC /* StockpileOperationalServices.swift in Sources */ = {isa = PBXBuildFile; fileRef = 66B76382A731740093C7DC45 /* StockpileOperationalServices.swift */; };
+/* End PBXBuildFile section */
+
+/* Begin PBXFileReference section */
+		20E915D61AC1B891665E233F /* StockpileCaptureApp.app */ = {isa = PBXFileReference; includeInIndex = 0; lastKnownFileType = wrapper.application; path = StockpileCaptureApp.app; sourceTree = BUILT_PRODUCTS_DIR; };
+		29718A07DD5FC9FE8F92ADEB /* StockpileOperationalStatusBannerState.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = StockpileOperationalStatusBannerState.swift; sourceTree = "<group>"; };
+		6568112C3BAC37CEE577E0F6 /* StockpileAppSession.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = StockpileAppSession.swift; sourceTree = "<group>"; };
+		66B76382A731740093C7DC45 /* StockpileOperationalServices.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = StockpileOperationalServices.swift; sourceTree = "<group>"; };
+		800501A0F82B12BF41DC1CC4 /* StockpileCaptureKit */ = {isa = PBXFileReference; lastKnownFileType = folder; name = StockpileCaptureKit; path = StockpileCaptureKit; sourceTree = SOURCE_ROOT; };
+		87BC667303FBD08B60B31208 /* Assets.xcassets */ = {isa = PBXFileReference; lastKnownFileType = folder.assetcatalog; path = Assets.xcassets; sourceTree = "<group>"; };
+		AC93215E6EF12CE0665E6E36 /* StockpileRootView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = StockpileRootView.swift; sourceTree = "<group>"; };
+		AD848DF11FBB1B1A4DB78B7D /* StockpileCaptureAppDelegate.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = StockpileCaptureAppDelegate.swift; sourceTree = "<group>"; };
+		B1DB615B5E87BB7FAC0835BA /* CaptureReferenceEvidenceExtractor.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CaptureReferenceEvidenceExtractor.swift; sourceTree = "<group>"; };
+		BE5AB42DC170B5F3B3BADEEC /* CaptureFeatureStore.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CaptureFeatureStore.swift; sourceTree = "<group>"; };
+		C2F2F54400C25056B7B66375 /* CaptureFeatureView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CaptureFeatureView.swift; sourceTree = "<group>"; };
+		C7A6FF2C70C964891BA317DF /* CaptureFeatureLocalQuickEstimate.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CaptureFeatureLocalQuickEstimate.swift; sourceTree = "<group>"; };
+		DF5E3581EC84A00B74228EA9 /* StockpileCaptureApp.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = StockpileCaptureApp.swift; sourceTree = "<group>"; };
+		EAC745728F6E0CAA2FECB4AA /* StockpileAppConfiguration.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = StockpileAppConfiguration.swift; sourceTree = "<group>"; };
+		F6AE3FB8971E0FD5FA2DD154 /* StockpileResultModelFactory.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = StockpileResultModelFactory.swift; sourceTree = "<group>"; };
+/* End PBXFileReference section */
+
+/* Begin PBXFrameworksBuildPhase section */
+		317E4D9120FEC2CBB8F2EA12 /* Frameworks */ = {
+			isa = PBXFrameworksBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+				F1F02B8B1179A957BD80B533 /* StockpileAppShell in Frameworks */,
+				3149C00435B65FBA5FB473DF /* StockpileMobileAPI in Frameworks */,
+				3549F80BE9016DE789EA7017 /* StockpileCameraCapture in Frameworks */,
+				8BB3DEAA3CA590DF1F4E3F6B /* StockpileUploadPipeline in Frameworks */,
+				0D4BC7C8B7D7C56DBAA17EC1 /* StockpileProcessingRuntime in Frameworks */,
+				D2265060C4C1E6420C503932 /* StockpileCaptureFlow in Frameworks */,
+				8351E3B556D363657CCE3E33 /* StockpileMobileFirstCapture in Frameworks */,
+				DD1BBBE05A4CD4D345D52202 /* StockpileResultsUI in Frameworks */,
+				843DFC44A99796302191BF0D /* StockpileDesignSystem in Frameworks */,
+				11A3D4F3E6AF79DB1CFA488C /* StockpileOperatorDashboard in Frameworks */,
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+/* End PBXFrameworksBuildPhase section */
+
+/* Begin PBXGroup section */
+		01242214E036B72596BAB482 /* Resources */ = {
+			isa = PBXGroup;
+			children = (
+				87BC667303FBD08B60B31208 /* Assets.xcassets */,
+			);
+			path = Resources;
+			sourceTree = "<group>";
+		};
+		269E100B5D4CCE7D6DA94A64 /* Sources */ = {
+			isa = PBXGroup;
+			children = (
+				99052C5A196BA77A38D7433C /* App */,
+				7DEB53EE36D31B80CFB1116B /* Features */,
+				EB3DBDF9FC50726DEB817094 /* Root */,
+				99F5350533EBB87BBED49C81 /* Support */,
+			);
+			path = Sources;
+			sourceTree = "<group>";
+		};
+		593702CBC5E857AA39A13EC9 /* Capture */ = {
+			isa = PBXGroup;
+			children = (
+				C7A6FF2C70C964891BA317DF /* CaptureFeatureLocalQuickEstimate.swift */,
+				BE5AB42DC170B5F3B3BADEEC /* CaptureFeatureStore.swift */,
+				C2F2F54400C25056B7B66375 /* CaptureFeatureView.swift */,
+				B1DB615B5E87BB7FAC0835BA /* CaptureReferenceEvidenceExtractor.swift */,
+			);
+			path = Capture;
+			sourceTree = "<group>";
+		};
+		754FC3D39CE15A134198500C /* Packages */ = {
+			isa = PBXGroup;
+			children = (
+				800501A0F82B12BF41DC1CC4 /* StockpileCaptureKit */,
+			);
+			name = Packages;
+			sourceTree = "<group>";
+		};
+		7DEB53EE36D31B80CFB1116B /* Features */ = {
+			isa = PBXGroup;
+			children = (
+				593702CBC5E857AA39A13EC9 /* Capture */,
+			);
+			path = Features;
+			sourceTree = "<group>";
+		};
+		99052C5A196BA77A38D7433C /* App */ = {
+			isa = PBXGroup;
+			children = (
+				DF5E3581EC84A00B74228EA9 /* StockpileCaptureApp.swift */,
+				AD848DF11FBB1B1A4DB78B7D /* StockpileCaptureAppDelegate.swift */,
+			);
+			path = App;
+			sourceTree = "<group>";
+		};
+		99F5350533EBB87BBED49C81 /* Support */ = {
+			isa = PBXGroup;
+			children = (
+				EAC745728F6E0CAA2FECB4AA /* StockpileAppConfiguration.swift */,
+				6568112C3BAC37CEE577E0F6 /* StockpileAppSession.swift */,
+				66B76382A731740093C7DC45 /* StockpileOperationalServices.swift */,
+				29718A07DD5FC9FE8F92ADEB /* StockpileOperationalStatusBannerState.swift */,
+				F6AE3FB8971E0FD5FA2DD154 /* StockpileResultModelFactory.swift */,
+			);
+			path = Support;
+			sourceTree = "<group>";
+		};
+		D9CC00FC7446F933BD2D4349 /* Products */ = {
+			isa = PBXGroup;
+			children = (
+				20E915D61AC1B891665E233F /* StockpileCaptureApp.app */,
+			);
+			name = Products;
+			sourceTree = "<group>";
+		};
+		EB3DBDF9FC50726DEB817094 /* Root */ = {
+			isa = PBXGroup;
+			children = (
+				AC93215E6EF12CE0665E6E36 /* StockpileRootView.swift */,
+			);
+			path = Root;
+			sourceTree = "<group>";
+		};
+		EED6FAC3E1220DF78FBB9794 = {
+			isa = PBXGroup;
+			children = (
+				754FC3D39CE15A134198500C /* Packages */,
+				FB561C48EE41F3FF672E811D /* StockpileCaptureApp */,
+				D9CC00FC7446F933BD2D4349 /* Products */,
+			);
+			sourceTree = "<group>";
+		};
+		FB561C48EE41F3FF672E811D /* StockpileCaptureApp */ = {
+			isa = PBXGroup;
+			children = (
+				01242214E036B72596BAB482 /* Resources */,
+				269E100B5D4CCE7D6DA94A64 /* Sources */,
+			);
+			path = StockpileCaptureApp;
+			sourceTree = "<group>";
+		};
+/* End PBXGroup section */
+
+/* Begin PBXNativeTarget section */
+		7103EB280E81888AC8AC2A18 /* StockpileCaptureApp */ = {
+			isa = PBXNativeTarget;
+			buildConfigurationList = 2A570672774C7B9149EFD89A /* Build configuration list for PBXNativeTarget "StockpileCaptureApp" */;
+			buildPhases = (
+				8733D206177153229B1FDC8D /* Sources */,
+				974BECE32BD544585FD89D9D /* Resources */,
+				317E4D9120FEC2CBB8F2EA12 /* Frameworks */,
+			);
+			buildRules = (
+			);
+			dependencies = (
+			);
+			name = StockpileCaptureApp;
+			packageProductDependencies = (
+				FE5EA70D27BEB5713C1CB0AC /* StockpileAppShell */,
+				936314F4A98413A5648BC97A /* StockpileMobileAPI */,
+				A782C45CE31838BE5B3E5158 /* StockpileCameraCapture */,
+				F4AED32D9399ACABFEA0EEEA /* StockpileUploadPipeline */,
+				F69EBDCA80A02265CA95003F /* StockpileProcessingRuntime */,
+				C04DF71F99558484CB08E013 /* StockpileCaptureFlow */,
+				2A6EF7DFD6FF3AF5256E7A92 /* StockpileMobileFirstCapture */,
+				E4EECD8B3FF9D65B3947634C /* StockpileResultsUI */,
+				BE7E629848ACF03F6F7D7DB5 /* StockpileDesignSystem */,
+				0FF0B55E7E1C00ED6B15CE44 /* StockpileOperatorDashboard */,
+			);
+			productName = StockpileCaptureApp;
+			productReference = 20E915D61AC1B891665E233F /* StockpileCaptureApp.app */;
+			productType = "com.apple.product-type.application";
+		};
+/* End PBXNativeTarget section */
+
+/* Begin PBXProject section */
+		4C6EC0927399CFF345A4F162 /* Project object */ = {
+			isa = PBXProject;
+			attributes = {
+				BuildIndependentTargetsInParallel = YES;
+				LastUpgradeCheck = 1430;
+				TargetAttributes = {
+					7103EB280E81888AC8AC2A18 = {
+						DevelopmentTeam = "$(STOCKPILE_DEVELOPMENT_TEAM)";
+						ProvisioningStyle = Automatic;
+					};
+				};
+			};
+			buildConfigurationList = 52346203275143494DF73C5D /* Build configuration list for PBXProject "StockpileCaptureApp" */;
+			developmentRegion = en;
+			hasScannedForEncodings = 0;
+			knownRegions = (
+				Base,
+				en,
+			);
+			mainGroup = EED6FAC3E1220DF78FBB9794;
+			minimizedProjectReferenceProxies = 1;
+			packageReferences = (
+				76F5E68B96BC56C6B758C643 /* XCLocalSwiftPackageReference "StockpileCaptureKit" */,
+			);
+			preferredProjectObjectVersion = 77;
+			productRefGroup = D9CC00FC7446F933BD2D4349 /* Products */;
+			projectDirPath = "";
+			projectRoot = "";
+			targets = (
+				7103EB280E81888AC8AC2A18 /* StockpileCaptureApp */,
+			);
+		};
+/* End PBXProject section */
+
+/* Begin PBXResourcesBuildPhase section */
+		974BECE32BD544585FD89D9D /* Resources */ = {
+			isa = PBXResourcesBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+				428FB210D6A5BBFF8E5E77F1 /* Assets.xcassets in Resources */,
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+/* End PBXResourcesBuildPhase section */
+
+/* Begin PBXSourcesBuildPhase section */
+		8733D206177153229B1FDC8D /* Sources */ = {
+			isa = PBXSourcesBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+				94779AD135C5686724EF1658 /* CaptureFeatureLocalQuickEstimate.swift in Sources */,
+				8DDFF33D25F6AA5A10EC6DCB /* CaptureFeatureStore.swift in Sources */,
+				56E1F93BBCFC2AD3D43723C2 /* CaptureFeatureView.swift in Sources */,
+				A705267AAC34BED2C24045E0 /* CaptureReferenceEvidenceExtractor.swift in Sources */,
+				5CEDDAF5C56A978BC84053F1 /* StockpileAppConfiguration.swift in Sources */,
+				AFE494103B67460B56A068D5 /* StockpileAppSession.swift in Sources */,
+				DF5EF99A5806238B19AF55A5 /* StockpileCaptureApp.swift in Sources */,
+				5B9C7D1F9F4DAC5EAAF17D3A /* StockpileCaptureAppDelegate.swift in Sources */,
+				F24313EFB98D44A70ED340DC /* StockpileOperationalServices.swift in Sources */,
+				E4A9811DF48A3D6095A76005 /* StockpileOperationalStatusBannerState.swift in Sources */,
+				BDC90D1745849879B6E8456F /* StockpileResultModelFactory.swift in Sources */,
+				99F7B66ECE75301CDB36F75B /* StockpileRootView.swift in Sources */,
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+/* End PBXSourcesBuildPhase section */
+
+/* Begin XCBuildConfiguration section */
+		1A9904A101EB5F5002C2BC75 /* Release */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
+				CODE_SIGN_IDENTITY = "iPhone Developer";
+				COPY_PHASE_STRIP = YES;
+				DEBUG_INFORMATION_FORMAT = "dwarf-with-dsym";
+				ENABLE_NS_ASSERTIONS = NO;
+				INFOPLIST_KEY_CFBundleURLTypes = "[[\"CFBundleTypeRole\": \"Editor\", \"CFBundleURLSchemes\": [\"stockpile-capture\"], \"CFBundleURLName\": \"com.clustox.stockpile.capture\"]]";
+				INFOPLIST_KEY_LSApplicationCategoryType = "public.app-category.business";
+				INFOPLIST_KEY_STOCKPILE_API_AUTH_HEADER_NAME = "$(STOCKPILE_API_AUTH_HEADER_NAME)";
+				INFOPLIST_KEY_STOCKPILE_API_AUTH_HEADER_VALUE = "$(STOCKPILE_API_AUTH_HEADER_VALUE)";
+				INFOPLIST_KEY_STOCKPILE_API_BASE_URL = "$(STOCKPILE_API_BASE_URL)";
+				INFOPLIST_KEY_STOCKPILE_API_BEARER_TOKEN = "$(STOCKPILE_API_BEARER_TOKEN)";
+				INFOPLIST_KEY_STOCKPILE_API_TIMEOUT_SECONDS = "$(STOCKPILE_API_TIMEOUT_SECONDS)";
+				INFOPLIST_KEY_STOCKPILE_ENABLE_BACKUP_VIDEO_IMPORT = "$(STOCKPILE_ENABLE_BACKUP_VIDEO_IMPORT)";
+				INFOPLIST_KEY_STOCKPILE_ENABLE_CONFIGURED_FALLBACK_CAPTURE = "$(STOCKPILE_ENABLE_CONFIGURED_FALLBACK_CAPTURE)";
+				INFOPLIST_KEY_STOCKPILE_ENABLE_LIDAR_ASSIST = "$(STOCKPILE_ENABLE_LIDAR_ASSIST)";
+				INFOPLIST_KEY_STOCKPILE_ENVIRONMENT = "$(STOCKPILE_ENVIRONMENT)";
+				INFOPLIST_KEY_STOCKPILE_LAUNCH_MODE = "$(STOCKPILE_LAUNCH_MODE)";
+				INFOPLIST_KEY_STOCKPILE_PROCESSING_POLL_INTERVAL_MS = "$(STOCKPILE_PROCESSING_POLL_INTERVAL_MS)";
+				INFOPLIST_KEY_STOCKPILE_UPLOAD_BACKGROUND_SESSION_ID = "$(STOCKPILE_UPLOAD_BACKGROUND_SESSION_ID)";
+				INFOPLIST_KEY_STOCKPILE_USE_LIVE_CAMERA = "$(STOCKPILE_USE_LIVE_CAMERA)";
+				INFOPLIST_KEY_STOCKPILE_USE_MOCK_RESULTS = "$(STOCKPILE_USE_MOCK_RESULTS)";
+				IPHONEOS_DEPLOYMENT_TARGET = 17.0;
+				LD_RUNPATH_SEARCH_PATHS = (
+					"$(inherited)",
+					"@executable_path/Frameworks",
+				);
+				SDKROOT = iphoneos;
+				STOCKPILE_API_AUTH_HEADER_NAME = "";
+				STOCKPILE_API_AUTH_HEADER_VALUE = "";
+				STOCKPILE_API_BASE_URL = "https://stockpile.theclustox.com/api/mobile";
+				STOCKPILE_API_BEARER_TOKEN = "";
+				STOCKPILE_API_TIMEOUT_SECONDS = 45;
+				STOCKPILE_ENABLE_BACKUP_VIDEO_IMPORT = NO;
+				STOCKPILE_ENABLE_CONFIGURED_FALLBACK_CAPTURE = NO;
+				STOCKPILE_ENABLE_LIDAR_ASSIST = YES;
+				STOCKPILE_ENVIRONMENT = Staging;
+				STOCKPILE_LAUNCH_MODE = operational;
+				STOCKPILE_PROCESSING_POLL_INTERVAL_MS = 2000;
+				STOCKPILE_UPLOAD_BACKGROUND_SESSION_ID = com.clustox.stockpile.capture.upload;
+				STOCKPILE_USE_LIVE_CAMERA = YES;
+				STOCKPILE_USE_MOCK_RESULTS = NO;
+				STRIP_INSTALLED_PRODUCT = YES;
+				SWIFT_COMPILATION_MODE = wholemodule;
+				TARGETED_DEVICE_FAMILY = "1,2";
+				VALIDATE_PRODUCT = YES;
+			};
+			name = Release;
+		};
+		6383F5970CE1CA73866E8658 /* Debug */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				ALWAYS_SEARCH_USER_PATHS = NO;
+				CLANG_ANALYZER_NONNULL = YES;
+				CLANG_ANALYZER_NUMBER_OBJECT_CONVERSION = YES_AGGRESSIVE;
+				CLANG_CXX_LANGUAGE_STANDARD = "gnu++14";
+				CLANG_CXX_LIBRARY = "libc++";
+				CLANG_ENABLE_MODULES = YES;
+				CLANG_ENABLE_OBJC_ARC = YES;
+				CLANG_ENABLE_OBJC_WEAK = YES;
+				CLANG_WARN_BLOCK_CAPTURE_AUTORELEASING = YES;
+				CLANG_WARN_BOOL_CONVERSION = YES;
+				CLANG_WARN_COMMA = YES;
+				CLANG_WARN_CONSTANT_CONVERSION = YES;
+				CLANG_WARN_DEPRECATED_OBJC_IMPLEMENTATIONS = YES;
+				CLANG_WARN_DIRECT_OBJC_ISA_USAGE = YES_ERROR;
+				CLANG_WARN_DOCUMENTATION_COMMENTS = YES;
+				CLANG_WARN_EMPTY_BODY = YES;
+				CLANG_WARN_ENUM_CONVERSION = YES;
+				CLANG_WARN_INFINITE_RECURSION = YES;
+				CLANG_WARN_INT_CONVERSION = YES;
+				CLANG_WARN_NON_LITERAL_NULL_CONVERSION = YES;
+				CLANG_WARN_OBJC_IMPLICIT_RETAIN_SELF = YES;
+				CLANG_WARN_OBJC_LITERAL_CONVERSION = YES;
+				CLANG_WARN_OBJC_ROOT_CLASS = YES_ERROR;
+				CLANG_WARN_QUOTED_INCLUDE_IN_FRAMEWORK_HEADER = YES;
+				CLANG_WARN_RANGE_LOOP_ANALYSIS = YES;
+				CLANG_WARN_STRICT_PROTOTYPES = YES;
+				CLANG_WARN_SUSPICIOUS_MOVE = YES;
+				CLANG_WARN_UNGUARDED_AVAILABILITY = YES_AGGRESSIVE;
+				CLANG_WARN_UNREACHABLE_CODE = YES;
+				CLANG_WARN__DUPLICATE_METHOD_MATCH = YES;
+				CODE_SIGN_STYLE = Automatic;
+				COPY_PHASE_STRIP = NO;
+				CURRENT_PROJECT_VERSION = "$(STOCKPILE_BUILD_NUMBER)";
+				DEBUG_INFORMATION_FORMAT = dwarf;
+				DEVELOPMENT_TEAM = "$(STOCKPILE_DEVELOPMENT_TEAM)";
+				ENABLE_STRICT_OBJC_MSGSEND = YES;
+				ENABLE_TESTABILITY = YES;
+				GCC_C_LANGUAGE_STANDARD = gnu11;
+				GCC_DYNAMIC_NO_PIC = NO;
+				GCC_NO_COMMON_BLOCKS = YES;
+				GCC_OPTIMIZATION_LEVEL = 0;
+				GCC_PREPROCESSOR_DEFINITIONS = (
+					"$(inherited)",
+					"DEBUG=1",
+				);
+				GCC_WARN_64_TO_32_BIT_CONVERSION = YES;
+				GCC_WARN_ABOUT_RETURN_TYPE = YES_ERROR;
+				GCC_WARN_UNDECLARED_SELECTOR = YES;
+				GCC_WARN_UNINITIALIZED_AUTOS = YES_AGGRESSIVE;
+				GCC_WARN_UNUSED_FUNCTION = YES;
+				GCC_WARN_UNUSED_VARIABLE = YES;
+				GENERATE_INFOPLIST_FILE = YES;
+				INFOPLIST_KEY_CFBundleDisplayName = "Stockpile Capture";
+				INFOPLIST_KEY_ITSAppUsesNonExemptEncryption = NO;
+				INFOPLIST_KEY_NSCameraUsageDescription = "Stockpile Capture records guided stockpile walkarounds for measurement processing.";
+				INFOPLIST_KEY_NSLocationWhenInUseUsageDescription = "Stockpile Capture uses location to tag capture sessions to the correct site.";
+				INFOPLIST_KEY_NSMotionUsageDescription = "Stockpile Capture uses motion sensors to check capture stability and guide the stockpile walkaround.";
+				INFOPLIST_KEY_NSPhotoLibraryAddUsageDescription = "Stockpile Capture can export review snapshots to your photo library.";
+				INFOPLIST_KEY_UIApplicationSceneManifest_Generation = YES;
+				INFOPLIST_KEY_UILaunchScreen_Generation = YES;
+				INFOPLIST_KEY_UIStatusBarStyle = UIStatusBarStyleDefault;
+				IPHONEOS_DEPLOYMENT_TARGET = 17.0;
+				MARKETING_VERSION = "$(STOCKPILE_MARKETING_VERSION)";
+				MTL_ENABLE_DEBUG_INFO = INCLUDE_SOURCE;
+				MTL_FAST_MATH = YES;
+				ONLY_ACTIVE_ARCH = YES;
+				PRODUCT_BUNDLE_IDENTIFIER = "$(STOCKPILE_PRODUCT_BUNDLE_IDENTIFIER)";
+				PRODUCT_NAME = "Stockpile Capture";
+				SDKROOT = iphoneos;
+				STOCKPILE_BUILD_NUMBER = 1;
+				STOCKPILE_DEVELOPMENT_TEAM = "";
+				STOCKPILE_MARKETING_VERSION = 0.1.0;
+				STOCKPILE_PRODUCT_BUNDLE_IDENTIFIER = com.clustox.stockpile.capture;
+				SUPPORTS_MACCATALYST = NO;
+				SWIFT_ACTIVE_COMPILATION_CONDITIONS = DEBUG;
+				SWIFT_OPTIMIZATION_LEVEL = "-Onone";
+				SWIFT_VERSION = 5.10;
+				TARGETED_DEVICE_FAMILY = 1;
+				VERSIONING_SYSTEM = "apple-generic";
+			};
+			name = Debug;
+		};
+		67B4E76EF136C6AAC2B4FE46 /* Debug */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
+				CODE_SIGN_IDENTITY = "iPhone Developer";
+				INFOPLIST_KEY_CFBundleURLTypes = "[[\"CFBundleTypeRole\": \"Editor\", \"CFBundleURLSchemes\": [\"stockpile-capture\"], \"CFBundleURLName\": \"com.clustox.stockpile.capture\"]]";
+				INFOPLIST_KEY_LSApplicationCategoryType = "public.app-category.business";
+				INFOPLIST_KEY_STOCKPILE_API_AUTH_HEADER_NAME = "$(STOCKPILE_API_AUTH_HEADER_NAME)";
+				INFOPLIST_KEY_STOCKPILE_API_AUTH_HEADER_VALUE = "$(STOCKPILE_API_AUTH_HEADER_VALUE)";
+				INFOPLIST_KEY_STOCKPILE_API_BASE_URL = "$(STOCKPILE_API_BASE_URL)";
+				INFOPLIST_KEY_STOCKPILE_API_BEARER_TOKEN = "$(STOCKPILE_API_BEARER_TOKEN)";
+				INFOPLIST_KEY_STOCKPILE_API_TIMEOUT_SECONDS = "$(STOCKPILE_API_TIMEOUT_SECONDS)";
+				INFOPLIST_KEY_STOCKPILE_ENABLE_BACKUP_VIDEO_IMPORT = "$(STOCKPILE_ENABLE_BACKUP_VIDEO_IMPORT)";
+				INFOPLIST_KEY_STOCKPILE_ENABLE_CONFIGURED_FALLBACK_CAPTURE = "$(STOCKPILE_ENABLE_CONFIGURED_FALLBACK_CAPTURE)";
+				INFOPLIST_KEY_STOCKPILE_ENABLE_LIDAR_ASSIST = "$(STOCKPILE_ENABLE_LIDAR_ASSIST)";
+				INFOPLIST_KEY_STOCKPILE_ENVIRONMENT = "$(STOCKPILE_ENVIRONMENT)";
+				INFOPLIST_KEY_STOCKPILE_LAUNCH_MODE = "$(STOCKPILE_LAUNCH_MODE)";
+				INFOPLIST_KEY_STOCKPILE_PROCESSING_POLL_INTERVAL_MS = "$(STOCKPILE_PROCESSING_POLL_INTERVAL_MS)";
+				INFOPLIST_KEY_STOCKPILE_UPLOAD_BACKGROUND_SESSION_ID = "$(STOCKPILE_UPLOAD_BACKGROUND_SESSION_ID)";
+				INFOPLIST_KEY_STOCKPILE_USE_LIVE_CAMERA = "$(STOCKPILE_USE_LIVE_CAMERA)";
+				INFOPLIST_KEY_STOCKPILE_USE_MOCK_RESULTS = "$(STOCKPILE_USE_MOCK_RESULTS)";
+				IPHONEOS_DEPLOYMENT_TARGET = 17.0;
+				LD_RUNPATH_SEARCH_PATHS = (
+					"$(inherited)",
+					"@executable_path/Frameworks",
+				);
+				SDKROOT = iphoneos;
+				STOCKPILE_API_AUTH_HEADER_NAME = "";
+				STOCKPILE_API_AUTH_HEADER_VALUE = "";
+				STOCKPILE_API_BASE_URL = "https://stockpile.theclustox.com/api/mobile";
+				STOCKPILE_API_BEARER_TOKEN = "";
+				STOCKPILE_API_TIMEOUT_SECONDS = 30;
+				STOCKPILE_ENABLE_BACKUP_VIDEO_IMPORT = NO;
+				STOCKPILE_ENABLE_CONFIGURED_FALLBACK_CAPTURE = NO;
+				STOCKPILE_ENABLE_LIDAR_ASSIST = YES;
+				STOCKPILE_ENVIRONMENT = Staging;
+				STOCKPILE_LAUNCH_MODE = operational;
+				STOCKPILE_PROCESSING_POLL_INTERVAL_MS = 2000;
+				STOCKPILE_UPLOAD_BACKGROUND_SESSION_ID = com.clustox.stockpile.capture.upload.debug;
+				STOCKPILE_USE_LIVE_CAMERA = YES;
+				STOCKPILE_USE_MOCK_RESULTS = NO;
+				TARGETED_DEVICE_FAMILY = "1,2";
+			};
+			name = Debug;
+		};
+		B140C80942C51EB7841F31EE /* Release */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				ALWAYS_SEARCH_USER_PATHS = NO;
+				CLANG_ANALYZER_NONNULL = YES;
+				CLANG_ANALYZER_NUMBER_OBJECT_CONVERSION = YES_AGGRESSIVE;
+				CLANG_CXX_LANGUAGE_STANDARD = "gnu++14";
+				CLANG_CXX_LIBRARY = "libc++";
+				CLANG_ENABLE_MODULES = YES;
+				CLANG_ENABLE_OBJC_ARC = YES;
+				CLANG_ENABLE_OBJC_WEAK = YES;
+				CLANG_WARN_BLOCK_CAPTURE_AUTORELEASING = YES;
+				CLANG_WARN_BOOL_CONVERSION = YES;
+				CLANG_WARN_COMMA = YES;
+				CLANG_WARN_CONSTANT_CONVERSION = YES;
+				CLANG_WARN_DEPRECATED_OBJC_IMPLEMENTATIONS = YES;
+				CLANG_WARN_DIRECT_OBJC_ISA_USAGE = YES_ERROR;
+				CLANG_WARN_DOCUMENTATION_COMMENTS = YES;
+				CLANG_WARN_EMPTY_BODY = YES;
+				CLANG_WARN_ENUM_CONVERSION = YES;
+				CLANG_WARN_INFINITE_RECURSION = YES;
+				CLANG_WARN_INT_CONVERSION = YES;
+				CLANG_WARN_NON_LITERAL_NULL_CONVERSION = YES;
+				CLANG_WARN_OBJC_IMPLICIT_RETAIN_SELF = YES;
+				CLANG_WARN_OBJC_LITERAL_CONVERSION = YES;
+				CLANG_WARN_OBJC_ROOT_CLASS = YES_ERROR;
+				CLANG_WARN_QUOTED_INCLUDE_IN_FRAMEWORK_HEADER = YES;
+				CLANG_WARN_RANGE_LOOP_ANALYSIS = YES;
+				CLANG_WARN_STRICT_PROTOTYPES = YES;
+				CLANG_WARN_SUSPICIOUS_MOVE = YES;
+				CLANG_WARN_UNGUARDED_AVAILABILITY = YES_AGGRESSIVE;
+				CLANG_WARN_UNREACHABLE_CODE = YES;
+				CLANG_WARN__DUPLICATE_METHOD_MATCH = YES;
+				CODE_SIGN_STYLE = Automatic;
+				COPY_PHASE_STRIP = NO;
+				CURRENT_PROJECT_VERSION = "$(STOCKPILE_BUILD_NUMBER)";
+				DEBUG_INFORMATION_FORMAT = "dwarf-with-dsym";
+				DEVELOPMENT_TEAM = "$(STOCKPILE_DEVELOPMENT_TEAM)";
+				ENABLE_NS_ASSERTIONS = NO;
+				ENABLE_STRICT_OBJC_MSGSEND = YES;
+				GCC_C_LANGUAGE_STANDARD = gnu11;
+				GCC_NO_COMMON_BLOCKS = YES;
+				GCC_WARN_64_TO_32_BIT_CONVERSION = YES;
+				GCC_WARN_ABOUT_RETURN_TYPE = YES_ERROR;
+				GCC_WARN_UNDECLARED_SELECTOR = YES;
+				GCC_WARN_UNINITIALIZED_AUTOS = YES_AGGRESSIVE;
+				GCC_WARN_UNUSED_FUNCTION = YES;
+				GCC_WARN_UNUSED_VARIABLE = YES;
+				GENERATE_INFOPLIST_FILE = YES;
+				INFOPLIST_KEY_CFBundleDisplayName = "Stockpile Capture";
+				INFOPLIST_KEY_ITSAppUsesNonExemptEncryption = NO;
+				INFOPLIST_KEY_NSCameraUsageDescription = "Stockpile Capture records guided stockpile walkarounds for measurement processing.";
+				INFOPLIST_KEY_NSLocationWhenInUseUsageDescription = "Stockpile Capture uses location to tag capture sessions to the correct site.";
+				INFOPLIST_KEY_NSMotionUsageDescription = "Stockpile Capture uses motion sensors to check capture stability and guide the stockpile walkaround.";
+				INFOPLIST_KEY_NSPhotoLibraryAddUsageDescription = "Stockpile Capture can export review snapshots to your photo library.";
+				INFOPLIST_KEY_UIApplicationSceneManifest_Generation = YES;
+				INFOPLIST_KEY_UILaunchScreen_Generation = YES;
+				INFOPLIST_KEY_UIStatusBarStyle = UIStatusBarStyleDefault;
+				IPHONEOS_DEPLOYMENT_TARGET = 17.0;
+				MARKETING_VERSION = "$(STOCKPILE_MARKETING_VERSION)";
+				MTL_ENABLE_DEBUG_INFO = NO;
+				MTL_FAST_MATH = YES;
+				PRODUCT_BUNDLE_IDENTIFIER = "$(STOCKPILE_PRODUCT_BUNDLE_IDENTIFIER)";
+				PRODUCT_NAME = "Stockpile Capture";
+				SDKROOT = iphoneos;
+				STOCKPILE_BUILD_NUMBER = 1;
+				STOCKPILE_DEVELOPMENT_TEAM = "";
+				STOCKPILE_MARKETING_VERSION = 0.1.0;
+				STOCKPILE_PRODUCT_BUNDLE_IDENTIFIER = com.clustox.stockpile.capture;
+				SUPPORTS_MACCATALYST = NO;
+				SWIFT_COMPILATION_MODE = wholemodule;
+				SWIFT_OPTIMIZATION_LEVEL = "-O";
+				SWIFT_VERSION = 5.10;
+				TARGETED_DEVICE_FAMILY = 1;
+				VERSIONING_SYSTEM = "apple-generic";
+			};
+			name = Release;
+		};
+/* End XCBuildConfiguration section */
+
+/* Begin XCConfigurationList section */
+		2A570672774C7B9149EFD89A /* Build configuration list for PBXNativeTarget "StockpileCaptureApp" */ = {
+			isa = XCConfigurationList;
+			buildConfigurations = (
+				67B4E76EF136C6AAC2B4FE46 /* Debug */,
+				1A9904A101EB5F5002C2BC75 /* Release */,
+			);
+			defaultConfigurationIsVisible = 0;
+			defaultConfigurationName = Debug;
+		};
+		52346203275143494DF73C5D /* Build configuration list for PBXProject "StockpileCaptureApp" */ = {
+			isa = XCConfigurationList;
+			buildConfigurations = (
+				6383F5970CE1CA73866E8658 /* Debug */,
+				B140C80942C51EB7841F31EE /* Release */,
+			);
+			defaultConfigurationIsVisible = 0;
+			defaultConfigurationName = Debug;
+		};
+/* End XCConfigurationList section */
+
+/* Begin XCLocalSwiftPackageReference section */
+		76F5E68B96BC56C6B758C643 /* XCLocalSwiftPackageReference "StockpileCaptureKit" */ = {
+			isa = XCLocalSwiftPackageReference;
+			relativePath = StockpileCaptureKit;
+		};
+/* End XCLocalSwiftPackageReference section */
+
+/* Begin XCSwiftPackageProductDependency section */
+		0FF0B55E7E1C00ED6B15CE44 /* StockpileOperatorDashboard */ = {
+			isa = XCSwiftPackageProductDependency;
+			productName = StockpileOperatorDashboard;
+		};
+		2A6EF7DFD6FF3AF5256E7A92 /* StockpileMobileFirstCapture */ = {
+			isa = XCSwiftPackageProductDependency;
+			productName = StockpileMobileFirstCapture;
+		};
+		936314F4A98413A5648BC97A /* StockpileMobileAPI */ = {
+			isa = XCSwiftPackageProductDependency;
+			productName = StockpileMobileAPI;
+		};
+		A782C45CE31838BE5B3E5158 /* StockpileCameraCapture */ = {
+			isa = XCSwiftPackageProductDependency;
+			productName = StockpileCameraCapture;
+		};
+		BE7E629848ACF03F6F7D7DB5 /* StockpileDesignSystem */ = {
+			isa = XCSwiftPackageProductDependency;
+			productName = StockpileDesignSystem;
+		};
+		C04DF71F99558484CB08E013 /* StockpileCaptureFlow */ = {
+			isa = XCSwiftPackageProductDependency;
+			productName = StockpileCaptureFlow;
+		};
+		E4EECD8B3FF9D65B3947634C /* StockpileResultsUI */ = {
+			isa = XCSwiftPackageProductDependency;
+			productName = StockpileResultsUI;
+		};
+		F4AED32D9399ACABFEA0EEEA /* StockpileUploadPipeline */ = {
+			isa = XCSwiftPackageProductDependency;
+			productName = StockpileUploadPipeline;
+		};
+		F69EBDCA80A02265CA95003F /* StockpileProcessingRuntime */ = {
+			isa = XCSwiftPackageProductDependency;
+			productName = StockpileProcessingRuntime;
+		};
+		FE5EA70D27BEB5713C1CB0AC /* StockpileAppShell */ = {
+			isa = XCSwiftPackageProductDependency;
+			productName = StockpileAppShell;
+		};
+/* End XCSwiftPackageProductDependency section */
+	};
+	rootObject = 4C6EC0927399CFF345A4F162 /* Project object */;
+}
