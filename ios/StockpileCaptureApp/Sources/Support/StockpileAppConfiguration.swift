@@ -80,6 +80,15 @@ struct StockpileOperationalUploadConfiguration: Equatable, Sendable {
     let byteCountOverride: Int64?
 }
 
+/// Configuration for the v2 markerless capture submission path. Coexists with
+/// the legacy `StockpileOperationalUploadConfiguration` so the v1 movie upload
+/// flow stays untouched while markerless `.stockpilecapture` bundles get a
+/// dedicated POST surface.
+struct StockpileOperationalMarkerlessSubmissionConfiguration: Equatable, Sendable {
+    let captureBundleSubmissionURL: URL
+    let timeoutInterval: TimeInterval
+}
+
 struct StockpileAppConfiguration: Equatable, Sendable {
     let environmentName: String
     let apiBaseURL: URL
@@ -90,6 +99,7 @@ struct StockpileAppConfiguration: Equatable, Sendable {
     let api: StockpileOperationalAPIConfiguration
     let capture: StockpileOperationalCaptureConfiguration
     let upload: StockpileOperationalUploadConfiguration
+    let markerlessSubmission: StockpileOperationalMarkerlessSubmissionConfiguration
     let processingPollInterval: Duration
 
     static func current(
@@ -173,6 +183,13 @@ struct StockpileAppConfiguration: Equatable, Sendable {
 
         let pollIntervalMilliseconds = runtimeValues.intValue(for: "STOCKPILE_PROCESSING_POLL_INTERVAL_MS") ?? 2_000
 
+        let markerlessSubmission = StockpileOperationalMarkerlessSubmissionConfiguration(
+            captureBundleSubmissionURL: runtimeValues.urlValue(for: "STOCKPILE_CAPTURE_BUNDLE_SUBMISSION_URL")
+                ?? Self.defaultCaptureBundleSubmissionURL(for: apiBaseURL),
+            timeoutInterval: runtimeValues.doubleValue(for: "STOCKPILE_CAPTURE_BUNDLE_SUBMISSION_TIMEOUT_SECONDS")
+                ?? 120
+        )
+
         return StockpileAppConfiguration(
             environmentName: environmentName,
             apiBaseURL: apiBaseURL,
@@ -183,8 +200,28 @@ struct StockpileAppConfiguration: Equatable, Sendable {
             api: api,
             capture: capture,
             upload: upload,
+            markerlessSubmission: markerlessSubmission,
             processingPollInterval: .milliseconds(pollIntervalMilliseconds)
         )
+    }
+
+    /// Resolve the v2 capture bundle endpoint by stripping the v1 mobile prefix
+    /// (if present) and appending `/api/v2/captures`. Both backends share a
+    /// host but expose different path families, so this defaults the new path
+    /// without forcing operators to set an extra env var.
+    private static func defaultCaptureBundleSubmissionURL(for apiBaseURL: URL) -> URL {
+        let pathV2 = "/api/v2/captures"
+
+        var components = URLComponents(url: apiBaseURL, resolvingAgainstBaseURL: false)
+        components?.path = pathV2
+        components?.query = nil
+        components?.fragment = nil
+
+        if let resolved = components?.url {
+            return resolved
+        }
+
+        return apiBaseURL.appending(path: pathV2)
     }
 
     var usesLocalOperationalAPI: Bool {

@@ -291,6 +291,51 @@ actor StockpileOperationalUploadService: StockpileUploadServicing {
     }
 }
 
+extension StockpileAppConfiguration {
+    /// Build a `URLSessionCaptureBundleSubmitter` configured for the v2
+    /// markerless `/api/v2/captures` endpoint. Auth headers are reused from
+    /// the existing operational API configuration so markerless submissions
+    /// inherit the same bearer/header conventions as the v1 path without
+    /// requiring extra plumbing.
+    func makeMarkerlessCaptureBundleSubmitter(
+        session: any StockpileCaptureBundleSubmissionSessioning = URLSessionCaptureBundleSubmissionSession()
+    ) -> URLSessionCaptureBundleSubmitter {
+        URLSessionCaptureBundleSubmitter(
+            configuration: makeMarkerlessCaptureBundleSubmissionConfiguration(),
+            session: session
+        )
+    }
+
+    func makeMarkerlessCaptureBundleSubmissionConfiguration() -> StockpileCaptureBundleSubmissionConfiguration {
+        StockpileCaptureBundleSubmissionConfiguration(
+            endpointURL: markerlessSubmission.captureBundleSubmissionURL,
+            timeoutInterval: markerlessSubmission.timeoutInterval,
+            additionalHeaders: markerlessAuthorizationHeaders()
+        )
+    }
+
+    private func markerlessAuthorizationHeaders() -> [String: String] {
+        var headers: [String: String] = [:]
+
+        if let bearerToken = api.bearerToken?
+            .trimmingCharacters(in: .whitespacesAndNewlines),
+           bearerToken.isEmpty == false {
+            headers["Authorization"] = "Bearer \(bearerToken)"
+        }
+
+        if let headerName = api.authHeaderName?
+            .trimmingCharacters(in: .whitespacesAndNewlines),
+           let headerValue = api.authHeaderValue?
+            .trimmingCharacters(in: .whitespacesAndNewlines),
+           headerName.isEmpty == false,
+           headerValue.isEmpty == false {
+            headers[headerName] = headerValue
+        }
+
+        return headers
+    }
+}
+
 extension StockpileOperationalUploadConfiguration {
     func makeFileDescriptor() throws -> StockpileUploadFileDescriptor {
         guard let fileURL else {

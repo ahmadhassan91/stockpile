@@ -390,6 +390,9 @@ final class StockpileAppSession: ObservableObject {
             authorizationStore: authorizationStore,
             defaultHeaders: configuration.liveMobileAPIConfiguration.defaultHeaders
         )
+        let markerlessSubmissionCoordinator = StockpileMarkerlessCaptureSubmissionCoordinator(
+            submitter: configuration.makeMarkerlessCaptureBundleSubmitter()
+        )
         let captureFeatureStore = CaptureFeatureStore.operational(
             configuration: makeOperationalFeatureConfiguration(configuration: configuration),
             cameraSession: makeOperationalCameraSession(configuration: configuration),
@@ -399,6 +402,7 @@ final class StockpileAppSession: ObservableObject {
                 service: apiService,
                 pollInterval: configuration.processingPollInterval
             ),
+            markerlessSubmissionCoordinator: markerlessSubmissionCoordinator,
             uploadFileDescriptorProvider: {
                 try configuration.upload.makeFileDescriptor()
             }
@@ -495,7 +499,8 @@ final class StockpileAppSession: ObservableObject {
                 backgroundSessionIdentifier: capture.backgroundUploadSessionIdentifier,
                 allowsImportedBackupVideo: false,
                 allowsConfiguredFallbackCaptureFile: false,
-                lidarAssistEnabled: configuration.enablesLidarAssist
+                lidarAssistEnabled: configuration.enablesLidarAssist,
+                markerlessCaptureEnabled: capture.markerlessCaptureEnabled
             )
         )
     }

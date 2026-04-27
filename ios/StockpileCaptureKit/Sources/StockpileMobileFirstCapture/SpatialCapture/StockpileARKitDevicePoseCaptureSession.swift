@@ -464,7 +464,10 @@ public final class StockpileARKitDevicePoseCaptureSession: NSObject, StockpileDe
         onBundleSnapshotUpdated?(snapshot)
     }
 
-    private func appendBundleFrameIfNeeded(frame: ARFrame) {
+    private func appendBundleFrameIfNeeded(
+        frame: ARFrame,
+        quickVolumeEstimate: StockpileDevicePoseQuickVolumeEstimate?
+    ) {
         let activeRecorder: StockpileCaptureBundleRecorder?
         var preferSmoothed = false
         bundleLock.withLock {
@@ -497,13 +500,14 @@ public final class StockpileARKitDevicePoseCaptureSession: NSObject, StockpileDe
 
         let trackingState = StockpileCaptureBundleTrackingState(frame.camera.trackingState)
         let trackingConfidence = trackingConfidence(for: frame.camera.trackingState)
-        let quickEstimate = latestSnapshot.quickVolumeEstimate.map(StockpileCaptureBundleQuickEstimate.init)
+        let quickEstimate = quickVolumeEstimate.map(StockpileCaptureBundleQuickEstimate.init)
 
         do {
-            _ = try recorder.appendFrame(
+            let persistedFrameNumber = try recorder.appendFrame(
                 capturedImage: frame.capturedImage,
                 timestamp: frame.timestamp,
                 cameraTransform: frame.camera.transform,
+                cameraIntrinsics: frame.camera.intrinsics,
                 eulerAngles: frame.camera.eulerAngles,
                 trackingState: trackingState,
                 trackingConfidence: trackingConfidence,
@@ -512,6 +516,10 @@ public final class StockpileARKitDevicePoseCaptureSession: NSObject, StockpileDe
                 depthIsSmoothed: depthIsSmoothed,
                 quickEstimate: quickEstimate
             )
+
+            guard let persistedFrameNumber else {
+                return
+            }
 
             // Track largest horizontal plane anchor as the implicit ground anchor.
             if let largestPlane = frame.anchors
@@ -527,7 +535,7 @@ public final class StockpileARKitDevicePoseCaptureSession: NSObject, StockpileDe
                         height: 0.0,
                         depth: Double(largestPlane.planeExtent.height)
                     ),
-                    observedFrameID: "frame-\(String(format: "%06d", recorder.frameCount - 1))"
+                    observedFrameID: "frame-\(String(format: "%06d", persistedFrameNumber))"
                 )
             }
 
@@ -767,6 +775,10 @@ extension StockpileARKitDevicePoseCaptureSession: ARSessionDelegate {
             frame: frame,
             includesDepth: latestSample.depthSummary != nil,
             includesOnDeviceVision: onDeviceVision != nil
+        )
+        appendBundleFrameIfNeeded(
+            frame: frame,
+            quickVolumeEstimate: quickVolumeEstimate
         )
         publish(
             status: .running,

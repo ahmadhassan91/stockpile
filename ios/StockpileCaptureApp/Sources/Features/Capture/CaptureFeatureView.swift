@@ -78,7 +78,8 @@ struct CaptureFeatureView: View {
                 primaryActionTitle: store.currentActionTitle,
                 primaryAction: store.performPrimaryAction,
                 restartAction: store.reset,
-                fallbackMovie: fallbackMovieState
+                fallbackMovie: fallbackMovieState,
+                liveQuickEstimate: liveQuickVolumeReadout
             )
         default:
             ScrollView {
@@ -140,7 +141,8 @@ struct CaptureFeatureView: View {
                 primaryActionTitle: store.currentActionTitle,
                 liveCaptureHint: store.currentActionHint,
                 startLiveCapture: store.performPrimaryAction,
-                fallbackMovie: fallbackMovieState
+                fallbackMovie: fallbackMovieState,
+                liveQuickEstimate: liveQuickVolumeReadout
             )
         case .guidedCapture:
             CaptureGuidedStateView(
@@ -151,7 +153,8 @@ struct CaptureFeatureView: View {
                 primaryActionTitle: store.currentActionTitle,
                 primaryAction: store.performPrimaryAction,
                 restartAction: store.reset,
-                fallbackMovie: fallbackMovieState
+                fallbackMovie: fallbackMovieState,
+                liveQuickEstimate: liveQuickVolumeReadout
             )
         case .uploadInProgress:
             CaptureProgressStateView(content: store.currentProgressContent)
@@ -191,6 +194,24 @@ struct CaptureFeatureView: View {
 
     private var liveCameraState: StockpileCameraCaptureSessionState? {
         store.liveCameraState
+    }
+
+    /// Resolve the live LiDAR readout for the HUD card. Returns nil when the
+    /// markerless capture mode is disabled or the ARKit pose runtime has not
+    /// yet emitted an estimate, which keeps the v1 path's HUD untouched.
+    private var liveQuickVolumeReadout: CaptureLiveQuickVolumeReadout? {
+        guard store.isMarkerlessCaptureEnabled else {
+            return nil
+        }
+        guard let estimate = store.latestQuickVolumeEstimate else {
+            return nil
+        }
+        return CaptureLiveQuickVolumeReadout(
+            volumeM3: estimate.volumeM3,
+            footprintAreaM2: estimate.footprintAreaM2,
+            peakHeightM: estimate.peakHeightM,
+            confidencePercent: estimate.confidencePercentage
+        )
     }
 
     private var provisionalProcessingResult: StockpileResultScreenModel? {
@@ -955,6 +976,7 @@ private struct CaptureIdleStateView: View {
     let liveCaptureHint: String
     let startLiveCapture: () -> Void
     let fallbackMovie: CaptureFallbackMovieState?
+    let liveQuickEstimate: CaptureLiveQuickVolumeReadout?
 
     var body: some View {
         VStack(alignment: .leading, spacing: StockpileSpacing.large) {
@@ -963,7 +985,8 @@ private struct CaptureIdleStateView: View {
                 wrongSceneFeedback: sceneIntelligence.wrongSceneFeedback,
                 primaryActionTitle: primaryActionTitle,
                 liveCaptureHint: liveCaptureHint,
-                startLiveCapture: startLiveCapture
+                startLiveCapture: startLiveCapture,
+                liveQuickEstimate: liveQuickEstimate
             )
 
             CaptureReadinessCard(
@@ -1148,6 +1171,7 @@ private struct CaptureLiveEntryCard: View {
     let primaryActionTitle: String
     let liveCaptureHint: String
     let startLiveCapture: () -> Void
+    let liveQuickEstimate: CaptureLiveQuickVolumeReadout?
 
     var body: some View {
         StockpileCard(appearance: .outlined) {
@@ -1181,6 +1205,10 @@ private struct CaptureLiveEntryCard: View {
                         tone: .info,
                         systemImage: "record.circle.fill"
                     )
+                }
+
+                if let liveQuickEstimate {
+                    CaptureLiveVolumeReadoutCard(readout: liveQuickEstimate)
                 }
 
                 CaptureInstructionGrid(
@@ -1780,6 +1808,7 @@ private struct CaptureGuidedStateView: View {
     let primaryAction: () -> Void
     let restartAction: () -> Void
     let fallbackMovie: CaptureFallbackMovieState?
+    let liveQuickEstimate: CaptureLiveQuickVolumeReadout?
 
     var body: some View {
         GeometryReader { geometry in
@@ -1790,7 +1819,7 @@ private struct CaptureGuidedStateView: View {
 
                 CaptureFieldCameraShade()
 
-                VStack {
+                VStack(alignment: .leading, spacing: StockpileSpacing.small) {
                     CaptureFieldTopOverlay(
                         preview: preview,
                         cameraState: cameraState,
@@ -1799,6 +1828,11 @@ private struct CaptureGuidedStateView: View {
                     )
                     .padding(.horizontal, StockpileSpacing.medium)
                     .padding(.top, StockpileSpacing.small)
+
+                    if let liveQuickEstimate {
+                        CaptureLiveVolumeOverlayCard(readout: liveQuickEstimate)
+                            .padding(.horizontal, StockpileSpacing.medium)
+                    }
 
                     Spacer(minLength: 0)
                 }
@@ -3325,6 +3359,220 @@ private struct CaptureFeatureActionBar: View {
         default:
             return actionTitle
         }
+    }
+}
+
+/// Snapshot of the on-device LiDAR quick estimate prepared for the HUD readout.
+/// We model this in the view layer so unit tests can construct previews without
+/// pulling in the StockpileMobileFirstCapture pose runtime.
+struct CaptureLiveQuickVolumeReadout: Equatable {
+    let volumeM3: Double
+    let footprintAreaM2: Double
+    let peakHeightM: Double
+    let confidencePercent: Int
+
+    var formattedVolume: String {
+        Self.measurementFormatter.string(from: NSNumber(value: volumeM3.rounded())) ?? "\(Int(volumeM3.rounded()))"
+    }
+
+    var formattedFootprint: String {
+        Self.measurementFormatter.string(from: NSNumber(value: footprintAreaM2.rounded())) ?? "\(Int(footprintAreaM2.rounded()))"
+    }
+
+    var formattedPeakHeight: String {
+        String(format: "%.2f", peakHeightM)
+    }
+
+    var clampedConfidencePercent: Int {
+        min(max(confidencePercent, 0), 100)
+    }
+
+    var confidenceTone: StockpileStatusTone {
+        switch clampedConfidencePercent {
+        case 75...:
+            return .success
+        case 45..<75:
+            return .caution
+        default:
+            return .critical
+        }
+    }
+
+    private static let measurementFormatter: NumberFormatter = {
+        let formatter = NumberFormatter()
+        formatter.numberStyle = .decimal
+        formatter.maximumFractionDigits = 0
+        return formatter
+    }()
+}
+
+/// Card variant rendered inside the idle `CaptureLiveEntryCard`. Matches the
+/// existing camera state panel's visual rhythm (outlined card, caption +
+/// section title pairing, status badge) so it slots in without introducing a
+/// new design language.
+private struct CaptureLiveVolumeReadoutCard: View {
+    let readout: CaptureLiveQuickVolumeReadout
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: StockpileSpacing.small) {
+            HStack(alignment: .top, spacing: StockpileSpacing.small) {
+                VStack(alignment: .leading, spacing: StockpileSpacing.xxSmall) {
+                    Text("On-device LiDAR")
+                        .font(StockpileTypography.caption.font)
+                        .foregroundStyle(StockpilePalette.mutedInk.color)
+
+                    Text("Provisional volume")
+                        .font(StockpileTypography.callout.font.weight(.semibold))
+                        .foregroundStyle(StockpilePalette.ink.color)
+                }
+
+                Spacer(minLength: 0)
+
+                StockpileBadge(
+                    "\(readout.clampedConfidencePercent)%",
+                    tone: readout.confidenceTone
+                )
+            }
+
+            CaptureLiveVolumeReadoutMetrics(readout: readout)
+
+            CaptureLiveVolumeConfidenceBar(readout: readout)
+        }
+        .padding(StockpileSpacing.medium)
+        .background(
+            StockpilePalette.canvas.color.opacity(0.55),
+            in: RoundedRectangle(cornerRadius: 22, style: .continuous)
+        )
+        .overlay(
+            RoundedRectangle(cornerRadius: 22, style: .continuous)
+                .stroke(StockpilePalette.border.color.opacity(0.55), lineWidth: 1)
+        )
+    }
+}
+
+/// Compact overlay variant rendered above the field preview during the
+/// `.guidedCapture` phase so the operator can watch the volume number tick up
+/// while walking. The visual treatment mirrors the existing top status capsule
+/// in `CaptureFieldTopOverlay`.
+private struct CaptureLiveVolumeOverlayCard: View {
+    let readout: CaptureLiveQuickVolumeReadout
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: StockpileSpacing.xSmall) {
+            HStack(spacing: StockpileSpacing.xSmall) {
+                Image(systemName: "cube.transparent.fill")
+                    .font(.system(size: 13, weight: .semibold, design: .rounded))
+                    .foregroundStyle(readout.confidenceTone.theme.accent.color)
+
+                Text("LiDAR readout")
+                    .font(StockpileTypography.caption.font.weight(.semibold))
+                    .foregroundStyle(Color.white.opacity(0.92))
+
+                Spacer(minLength: 0)
+
+                Text("\(readout.clampedConfidencePercent)%")
+                    .font(StockpileTypography.caption.font.weight(.bold))
+                    .foregroundStyle(readout.confidenceTone.theme.accent.color)
+                    .contentTransition(.numericText())
+            }
+
+            CaptureLiveVolumeReadoutMetrics(readout: readout, useOverlayPalette: true)
+        }
+        .padding(.horizontal, StockpileSpacing.medium)
+        .padding(.vertical, StockpileSpacing.small)
+        .background(
+            Color.black.opacity(0.42),
+            in: RoundedRectangle(cornerRadius: 18, style: .continuous)
+        )
+        .overlay(
+            RoundedRectangle(cornerRadius: 18, style: .continuous)
+                .stroke(Color.white.opacity(0.12), lineWidth: 1)
+        )
+    }
+}
+
+/// Internal grid of the three measurement values. Animates between values via
+/// `.contentTransition(.numericText())` so the operator sees the volume tick up
+/// instead of a hard cut.
+private struct CaptureLiveVolumeReadoutMetrics: View {
+    let readout: CaptureLiveQuickVolumeReadout
+    var useOverlayPalette: Bool = false
+
+    var body: some View {
+        HStack(alignment: .top, spacing: StockpileSpacing.small) {
+            CaptureLiveVolumeReadoutMetric(
+                title: "Volume",
+                value: readout.formattedVolume,
+                unit: "m³",
+                useOverlayPalette: useOverlayPalette
+            )
+
+            CaptureLiveVolumeReadoutMetric(
+                title: "Footprint",
+                value: readout.formattedFootprint,
+                unit: "m²",
+                useOverlayPalette: useOverlayPalette
+            )
+
+            CaptureLiveVolumeReadoutMetric(
+                title: "Peak height",
+                value: readout.formattedPeakHeight,
+                unit: "m",
+                useOverlayPalette: useOverlayPalette
+            )
+        }
+    }
+}
+
+private struct CaptureLiveVolumeReadoutMetric: View {
+    let title: String
+    let value: String
+    let unit: String
+    let useOverlayPalette: Bool
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: StockpileSpacing.xxxSmall) {
+            Text(title.uppercased())
+                .font(StockpileTypography.caption.font)
+                .foregroundStyle(useOverlayPalette ? Color.white.opacity(0.7) : StockpilePalette.mutedInk.color)
+
+            HStack(alignment: .firstTextBaseline, spacing: 2) {
+                Text(value)
+                    .font(StockpileTypography.sectionTitle.font.weight(.semibold))
+                    .foregroundStyle(useOverlayPalette ? Color.white : StockpilePalette.ink.color)
+                    .contentTransition(.numericText())
+
+                Text(unit)
+                    .font(StockpileTypography.caption.font.weight(.medium))
+                    .foregroundStyle(useOverlayPalette ? Color.white.opacity(0.75) : StockpilePalette.mutedInk.color)
+            }
+        }
+        .frame(maxWidth: .infinity, alignment: .leading)
+    }
+}
+
+/// Subtle horizontal bar that visualises the live confidence percentage so the
+/// operator gets a quick at-a-glance signal. Uses the same status tone palette
+/// as the rest of the design system.
+private struct CaptureLiveVolumeConfidenceBar: View {
+    let readout: CaptureLiveQuickVolumeReadout
+
+    var body: some View {
+        GeometryReader { geometry in
+            let percent = Double(readout.clampedConfidencePercent) / 100.0
+            let filledWidth = max(geometry.size.width * percent, 2)
+
+            ZStack(alignment: .leading) {
+                Capsule()
+                    .fill(StockpilePalette.border.color.opacity(0.55))
+
+                Capsule()
+                    .fill(readout.confidenceTone.theme.accent.color)
+                    .frame(width: filledWidth)
+            }
+        }
+        .frame(height: 6)
+        .animation(.easeInOut(duration: 0.18), value: readout.clampedConfidencePercent)
     }
 }
 

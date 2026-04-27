@@ -235,6 +235,15 @@ public struct StockpileCaptureBundleQuickEstimate: Codable, Equatable, Sendable 
             cameraPathDistanceM: estimate.cameraPathDistanceM
         )
     }
+
+    private enum CodingKeys: String, CodingKey {
+        case volumeM3 = "volume_m3"
+        case footprintAreaM2 = "footprint_area_m2"
+        case peakHeightM = "peak_height_m"
+        case confidenceScore = "confidence_score"
+        case sampledPointCount = "sampled_point_count"
+        case cameraPathDistanceM = "camera_path_distance_m"
+    }
 }
 
 public struct StockpileCaptureBundleManifest: Codable, Equatable, Sendable {
@@ -366,6 +375,8 @@ public struct StockpileCaptureBundlePoseSample: Codable, Equatable, Sendable {
     public let frameNumber: Int
     public let timestampSec: TimeInterval
     public let transform: StockpileCaptureBundleTransform
+    public let intrinsics: [Float]
+    public let lidarActive: Bool
     public let trackingState: StockpileCaptureBundleTrackingState
     public let trackingConfidence: Double
 
@@ -375,6 +386,8 @@ public struct StockpileCaptureBundlePoseSample: Codable, Equatable, Sendable {
         frameNumber: Int,
         timestampSec: TimeInterval,
         transform: StockpileCaptureBundleTransform,
+        intrinsics: [Float] = [],
+        lidarActive: Bool = true,
         trackingState: StockpileCaptureBundleTrackingState,
         trackingConfidence: Double
     ) {
@@ -383,6 +396,8 @@ public struct StockpileCaptureBundlePoseSample: Codable, Equatable, Sendable {
         self.frameNumber = max(0, frameNumber)
         self.timestampSec = max(0, timestampSec)
         self.transform = transform
+        self.intrinsics = Array(intrinsics.prefix(9)) + Array(repeating: 0, count: max(0, 9 - intrinsics.count))
+        self.lidarActive = lidarActive
         self.trackingState = trackingState
         self.trackingConfidence = trackingConfidence.clampedCaptureBundleRatio
     }
@@ -393,6 +408,8 @@ public struct StockpileCaptureBundlePoseSample: Codable, Equatable, Sendable {
         case frameNumber = "frame_number"
         case timestampSec = "timestamp_sec"
         case transform
+        case intrinsics
+        case lidarActive = "lidar_active"
         case trackingState = "tracking_state"
         case trackingConfidence = "tracking_confidence"
     }

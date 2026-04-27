@@ -230,6 +230,7 @@ struct CaptureFeatureConfiguration {
         var allowsImportedBackupVideo: Bool
         var allowsConfiguredFallbackCaptureFile: Bool
         var lidarAssistEnabled: Bool
+        var markerlessCaptureEnabled: Bool
 
         static let preview = CaptureFeaturePipelineConfiguration(
             siteID: "qpmc-north-yard",
@@ -240,7 +241,8 @@ struct CaptureFeatureConfiguration {
             backgroundSessionIdentifier: "com.clustox.stockpile.capture.upload",
             allowsImportedBackupVideo: false,
             allowsConfiguredFallbackCaptureFile: false,
-            lidarAssistEnabled: true
+            lidarAssistEnabled: true,
+            markerlessCaptureEnabled: true
         )
     }
 
@@ -481,6 +483,16 @@ final class CaptureFeatureStore: ObservableObject {
     }
     @Published private(set) var pendingRunRecoveryState: CaptureFeaturePendingRunRecoveryState?
     @Published private(set) var currentProcessingState: StockpileProcessingRuntimeState?
+    /// Live on-device LiDAR quick estimate emitted by the ARKit pose runtime.
+    /// Updated every time the pose observation controller publishes a new
+    /// snapshot, so HUD readouts stay in sync as the operator walks the pile.
+    @Published private(set) var latestQuickVolumeEstimate: CaptureFeatureLocalQuickEstimate?
+    /// Latest state of the v2 `.stockpilecapture` bundle submission. The legacy
+    /// v1 path is unaffected; this stays `.idle` for non-markerless captures.
+    @Published private(set) var markerlessSubmissionState: StockpileMarkerlessCaptureSubmissionState = .idle
+    /// Most recent markerless submission receipt (kept after the request lands
+    /// so the UI can offer "open processing" affordances).
+    @Published private(set) var lastMarkerlessSubmissionReceipt: StockpileCaptureBundleSubmissionReceipt?
 
     private let initialConfiguration: CaptureFeatureConfiguration
     private let dependencies: CaptureFeatureDependencies
@@ -490,8 +502,11 @@ final class CaptureFeatureStore: ObservableObject {
     private let processingCoordinator: StockpileProcessingRuntimeCoordinator?
     private let uploadFileDescriptorProvider: () throws -> StockpileUploadFileDescriptor
     private let poseObservationController: CaptureFeatureDevicePoseObservationController
+    private let markerlessSubmissionCoordinator: StockpileMarkerlessCaptureSubmissionCoordinator?
     private var pipelineTask: Task<Void, Never>?
     private var cameraMonitoringTask: Task<Void, Never>?
+    private var markerlessSubmissionTask: Task<Void, Never>?
+    private var lastSubmittedMarkerlessArchiveURL: URL?
     private var selectedMovieStorage: CaptureSelectedMovieStorage?
     private var ownedSelectedMovieURLs: Set<URL> = []
     private var activeUploadFileURL: URL?
@@ -506,6 +521,7 @@ final class CaptureFeatureStore: ObservableObject {
         apiService: (any StockpileMobileAPIServicing)? = nil,
         uploadService: (any StockpileUploadServicing)? = nil,
         processingCoordinator: StockpileProcessingRuntimeCoordinator? = nil,
+        markerlessSubmissionCoordinator: StockpileMarkerlessCaptureSubmissionCoordinator? = nil,
         uploadFileDescriptorProvider: @escaping () throws -> StockpileUploadFileDescriptor = CaptureFeatureStore.defaultUploadDescriptor
     ) {
         let poseObservationController = CaptureFeatureDevicePoseObservationController()
@@ -517,16 +533,18 @@ final class CaptureFeatureStore: ObservableObject {
         self.apiService = apiService
         self.uploadService = uploadService
         self.processingCoordinator = processingCoordinator
+        self.markerlessSubmissionCoordinator = markerlessSubmissionCoordinator
         self.poseObservationController = poseObservationController
         self.uploadFileDescriptorProvider = uploadFileDescriptorProvider
-        self.poseObservationController.onStateUpdated = { [weak self] _ in
-            self?.handlePoseObservationStateUpdated()
+        self.poseObservationController.onStateUpdated = { [weak self] state in
+            self?.handlePoseObservationStateUpdated(state)
         }
     }
 
     deinit {
         pipelineTask?.cancel()
         cameraMonitoringTask?.cancel()
+        markerlessSubmissionTask?.cancel()
         let retainedURLs = Set([activeUploadFileURL].compactMap { $0 })
         let removableURLs = ownedSelectedMovieURLs.filter { retainedURLs.contains($0) == false }
         Self.removeOwnedFiles(removableURLs)
@@ -700,6 +718,13 @@ final class CaptureFeatureStore: ObservableObject {
         selectedMovieFileDescriptor != nil
     }
 
+    /// Whether the markerless `.stockpilecapture` flow is enabled for this run.
+    /// SwiftUI views read this to decide whether to render the live volume HUD
+    /// (which only makes sense when the v2 markerless path is active).
+    var isMarkerlessCaptureEnabled: Bool {
+        configuration.pipeline.markerlessCaptureEnabled
+    }
+
     var livePreviewSource: (any CaptureFeatureLivePreviewSessionBridging)? {
         cameraSession as? any CaptureFeatureLivePreviewSessionBridging
     }
@@ -777,14 +802,23 @@ final class CaptureFeatureStore: ObservableObject {
     func reset() {
         pipelineTask?.cancel()
         pipelineTask = nil
+        markerlessSubmissionTask?.cancel()
+        markerlessSubmissionTask = nil
         activeUploadFileURL = nil
         activeUploadSource = nil
         pendingRunRecoveryState = nil
         currentProcessingState = nil
         isFinalizingRecordedCapture = false
         lastObservedCameraState = nil
+        latestQuickVolumeEstimate = nil
+        markerlessSubmissionState = .idle
+        lastMarkerlessSubmissionReceipt = nil
+        lastSubmittedMarkerlessArchiveURL = nil
         poseObservationController.reset()
         cameraSession?.reset()
+        if let coordinator = markerlessSubmissionCoordinator {
+            Task { await coordinator.reset() }
+        }
         selectedMovieImportErrorMessage = nil
         configuration = initialConfiguration
         phase = .idle
@@ -872,6 +906,7 @@ final class CaptureFeatureStore: ObservableObject {
         apiService: any StockpileMobileAPIServicing,
         uploadService: any StockpileUploadServicing,
         processingCoordinator: StockpileProcessingRuntimeCoordinator,
+        markerlessSubmissionCoordinator: StockpileMarkerlessCaptureSubmissionCoordinator? = nil,
         uploadFileDescriptorProvider: @escaping () throws -> StockpileUploadFileDescriptor
     ) -> CaptureFeatureStore {
         CaptureFeatureStore(
@@ -882,8 +917,148 @@ final class CaptureFeatureStore: ObservableObject {
             apiService: apiService,
             uploadService: uploadService,
             processingCoordinator: processingCoordinator,
+            markerlessSubmissionCoordinator: markerlessSubmissionCoordinator,
             uploadFileDescriptorProvider: uploadFileDescriptorProvider
         )
+    }
+
+    /// Test/preview seam to drive the live HUD readout from a known quick
+    /// estimate without standing up the ARKit pose runtime. The legacy v1
+    /// upload path is unchanged.
+    func updateLatestQuickVolumeEstimate(_ estimate: CaptureFeatureLocalQuickEstimate?) {
+        latestQuickVolumeEstimate = estimate
+        objectWillChange.send()
+    }
+
+    #if canImport(StockpileMobileFirstCapture)
+    /// Hand off a finalized markerless `.stockpilecapture` bundle to the v2
+    /// backend. Called from the ARKit bundle completion callback when the
+    /// markerless mode is active. The legacy v1 path is untouched.
+    ///
+    /// On success the store transitions to `.processing` and stores the
+    /// receipt. v2 result polling is intentionally a TODO — submitting the
+    /// bundle is the slice that lands first; we surface the receipt so the
+    /// next slice can drive `/api/v2/jobs/{jobId}` polling without changing
+    /// the store shape again.
+    func submitMarkerlessBundle(_ output: StockpileCaptureBundleRecordingOutput) {
+        let archiveURL = output.archiveURL
+        let captureID = output.captureID
+        submitMarkerlessBundle(
+            archiveURL: archiveURL,
+            captureID: captureID
+        )
+    }
+    #endif
+
+    /// Lower-level entry that takes the archive URL and capture ID directly so
+    /// tests can drive the submission flow without instantiating the full
+    /// `StockpileCaptureBundleRecordingOutput` (which depends on ARKit-only
+    /// document types).
+    func submitMarkerlessBundle(
+        archiveURL: URL,
+        captureID: String
+    ) {
+        guard let coordinator = markerlessSubmissionCoordinator else {
+            // No coordinator means the host hasn't opted into v2 markerless.
+            // Surface a clear failed state so the operator sees something
+            // instead of a silent drop.
+            markerlessSubmissionState = .failed(
+                captureID: captureID,
+                message: "Markerless submission is not configured for this build."
+            )
+            return
+        }
+
+        // Cancel any in-flight submission for a previous bundle. The coordinator
+        // itself rejects concurrent calls, but tearing down the prior task
+        // keeps the published state consistent.
+        markerlessSubmissionTask?.cancel()
+        lastSubmittedMarkerlessArchiveURL = archiveURL
+        markerlessSubmissionState = .submitting(captureID: captureID)
+        // Mirror v1's UX: while the bundle is uploading, treat the run as
+        // "upload in progress" so the existing action bar copy applies.
+        if phase == .guidedCapture || phase == .idle {
+            phase = .uploadInProgress
+        }
+
+        let request = StockpileMarkerlessCaptureSubmissionRequest(
+            archiveURL: archiveURL,
+            captureID: captureID,
+            siteID: configuration.pipeline.siteID,
+            materialCode: configuration.pipeline.materialCode
+        )
+
+        // The store is @MainActor, so the spawned task inherits main-actor
+        // isolation. Mutations to the published state therefore stay on the
+        // main thread without an extra `MainActor.run` hop.
+        markerlessSubmissionTask = Task { [weak self] in
+            guard let self else { return }
+            do {
+                let receipt = try await coordinator.submit(request)
+                guard Task.isCancelled == false else { return }
+                self.applyMarkerlessSubmissionSuccess(receipt: receipt)
+            } catch is CancellationError {
+                // Cancelled while another submission started; nothing to do.
+                return
+            } catch {
+                guard Task.isCancelled == false else { return }
+                self.applyMarkerlessSubmissionFailure(
+                    captureID: request.captureID,
+                    error: error
+                )
+            }
+        }
+    }
+
+    /// Retry a previously failed markerless submission. Returns false if there
+    /// is nothing to retry (e.g., the submission has not been attempted yet
+    /// or it already succeeded).
+    @discardableResult
+    func retryMarkerlessSubmission() -> Bool {
+        guard
+            case let .failed(captureID, _) = markerlessSubmissionState,
+            let archiveURL = lastSubmittedMarkerlessArchiveURL
+        else {
+            return false
+        }
+
+        submitMarkerlessBundle(archiveURL: archiveURL, captureID: captureID)
+        return true
+    }
+
+    private func applyMarkerlessSubmissionSuccess(
+        receipt: StockpileCaptureBundleSubmissionReceipt
+    ) {
+        markerlessSubmissionState = .submitted(receipt: receipt)
+        lastMarkerlessSubmissionReceipt = receipt
+        // Mirror the v1 phase progression: a confirmed receipt means the
+        // backend now owns the run. v2 result polling will land in a
+        // follow-up slice; surfacing `.processing` keeps the existing UI
+        // copy ("Building result") accurate in the meantime.
+        phase = .processing
+    }
+
+    private func applyMarkerlessSubmissionFailure(
+        captureID: String,
+        error: any Error
+    ) {
+        let message = (error as? LocalizedError)?.errorDescription
+            ?? error.localizedDescription
+        markerlessSubmissionState = .failed(
+            captureID: captureID,
+            message: message
+        )
+        // Push the visible feature phase to the existing blocked-result
+        // surface so operators see a clearly recoverable error and can
+        // retry from the standard recapture button.
+        configuration.processing = UploadProgressContent(
+            transferState: .complete,
+            processingState: .blocked,
+            statusTone: .warning,
+            primaryMessage: "Markerless capture submission failed. \(message)",
+            recaptureGuidance: runtimeFailureRecaptureGuidance(message: message)
+        )
+        phase = .blockedResult
     }
 
     func resumePendingRunRecovery(_ pendingRun: CaptureFeaturePendingRunRecoveryState) {
@@ -2627,7 +2802,14 @@ final class CaptureFeatureStore: ObservableObject {
         )
     }
 
-    private func handlePoseObservationStateUpdated() {
+    private func handlePoseObservationStateUpdated(_ state: CaptureFeatureDevicePoseObservationState) {
+        // Always mirror the latest LiDAR quick estimate so the SwiftUI HUD
+        // can react regardless of phase. The HUD card itself is gated on
+        // markerless mode so it stays hidden when v1 captures run.
+        if latestQuickVolumeEstimate != state.latestQuickEstimate {
+            latestQuickVolumeEstimate = state.latestQuickEstimate
+        }
+
         guard phase == .guidedCapture || (phase == .uploadInProgress && isFinalizingRecordedCapture) else {
             return
         }

@@ -130,6 +130,7 @@ final class StockpileCaptureBundleRecorder: @unchecked Sendable {
         capturedImage: CVPixelBuffer,
         timestamp: TimeInterval,
         cameraTransform: simd_float4x4,
+        cameraIntrinsics: simd_float3x3,
         eulerAngles: simd_float3,
         trackingState: StockpileCaptureBundleTrackingState,
         trackingConfidence: Double,
@@ -137,19 +138,35 @@ final class StockpileCaptureBundleRecorder: @unchecked Sendable {
         confidenceMap: CVPixelBuffer?,
         depthIsSmoothed: Bool,
         quickEstimate: StockpileCaptureBundleQuickEstimate?
-    ) throws -> Int {
-        let frameNumber = frameCount
-        frameCount += 1
-        lastPersistedFrameTimestamp = timestamp
-        if let quickEstimate {
-            lastQuickEstimate = quickEstimate
+    ) throws -> Int? {
+        guard let depthMap else {
+            droppedFrameCount += 1
+            return nil
         }
 
+        let frameNumber = frameCount
         let zeroPaddedID = String(format: "%06d", frameNumber)
         let frameID = "frame-\(zeroPaddedID)"
         let poseID = "pose-\(zeroPaddedID)"
 
-        // 1. Persist RGB JPEG.
+        // 1. Serialize depth before writing RGB so a dropped depth frame never
+        // leaves behind an RGB/pose entry the backend cannot fuse.
+        let serializedDepth: StockpileSerializedDepthMap
+        do {
+            serializedDepth = try StockpileDepthMapSerializer.serialize(
+                depthMap: depthMap,
+                confidenceMap: confidenceMap
+            )
+        } catch let error as StockpileDepthMapSerializer.SerializationError {
+            _ = error
+            droppedFrameCount += 1
+            return nil
+        } catch {
+            droppedFrameCount += 1
+            throw RecorderError.depthSerializationFailed(error.localizedDescription)
+        }
+
+        // 2. Persist RGB JPEG.
         let rgbRelativePath = "rgb/\(zeroPaddedID).jpg"
         let rgbURL = stagingDirectoryURL.appendingPathComponent(rgbRelativePath)
         let rgbWidth = CVPixelBufferGetWidth(capturedImage)
@@ -176,55 +193,46 @@ final class StockpileCaptureBundleRecorder: @unchecked Sendable {
             byteSize: rgbBytes
         )
 
-        // 2. Persist depth + confidence (when present).
-        var depthMetadata: StockpileCaptureBundleDepthMetadata?
+        // 3. Persist depth + confidence.
+        let depthMetadata: StockpileCaptureBundleDepthMetadata
         var confidenceMetadata: StockpileCaptureBundleConfidenceMetadata?
 
-        if let depthMap {
-            do {
-                let serialized = try StockpileDepthMapSerializer.serialize(
-                    depthMap: depthMap,
-                    confidenceMap: confidenceMap
-                )
-                let depthRelativePath = "depth/\(zeroPaddedID).f16.bin"
-                let depthURL = stagingDirectoryURL.appendingPathComponent(depthRelativePath)
-                try writeData(serialized.depthF16LittleEndianData, to: depthURL)
-                let (minDepth, maxDepth) = depthRangeMeters(from: depthMap)
-                depthMetadata = StockpileCaptureBundleDepthMetadata(
-                    relativePath: depthRelativePath,
-                    width: serialized.width,
-                    height: serialized.height,
-                    pixelFormat: "float16",
-                    minDepthM: minDepth,
-                    maxDepthM: maxDepth,
-                    isSmoothed: depthIsSmoothed,
-                    byteSize: Int64(serialized.depthF16LittleEndianData.count)
-                )
+        do {
+            let depthRelativePath = "depth/\(zeroPaddedID).f16.bin"
+            let depthURL = stagingDirectoryURL.appendingPathComponent(depthRelativePath)
+            try writeData(serializedDepth.depthF16LittleEndianData, to: depthURL)
+            let (minDepth, maxDepth) = depthRangeMeters(from: depthMap)
+            depthMetadata = StockpileCaptureBundleDepthMetadata(
+                relativePath: depthRelativePath,
+                width: serializedDepth.width,
+                height: serializedDepth.height,
+                pixelFormat: "float16",
+                minDepthM: minDepth,
+                maxDepthM: maxDepth,
+                isSmoothed: depthIsSmoothed,
+                byteSize: Int64(serializedDepth.depthF16LittleEndianData.count)
+            )
 
-                if let confidenceData = serialized.confidenceMapUInt8Data {
-                    let confidenceRelativePath = "confidence/\(zeroPaddedID).u8.bin"
-                    let confidenceURL = stagingDirectoryURL.appendingPathComponent(confidenceRelativePath)
-                    try writeData(confidenceData, to: confidenceURL)
-                    confidenceMetadata = StockpileCaptureBundleConfidenceMetadata(
-                        relativePath: confidenceRelativePath,
-                        width: serialized.width,
-                        height: serialized.height,
-                        pixelFormat: "uint8",
-                        coverageRatio: confidenceCoverageRatio(samples: confidenceData),
-                        byteSize: Int64(confidenceData.count)
-                    )
-                }
-            } catch let error as RecorderError {
-                throw error
-            } catch let error as StockpileDepthMapSerializer.SerializationError {
-                // Depth failures are non-fatal: log but keep the RGB frame.
-                _ = error
-            } catch {
-                throw RecorderError.depthSerializationFailed(error.localizedDescription)
+            if let confidenceData = serializedDepth.confidenceMapUInt8Data {
+                let confidenceRelativePath = "confidence/\(zeroPaddedID).u8.bin"
+                let confidenceURL = stagingDirectoryURL.appendingPathComponent(confidenceRelativePath)
+                try writeData(confidenceData, to: confidenceURL)
+                confidenceMetadata = StockpileCaptureBundleConfidenceMetadata(
+                    relativePath: confidenceRelativePath,
+                    width: serializedDepth.width,
+                    height: serializedDepth.height,
+                    pixelFormat: "uint8",
+                    coverageRatio: confidenceCoverageRatio(samples: confidenceData),
+                    byteSize: Int64(confidenceData.count)
+                )
             }
+        } catch let error as RecorderError {
+            throw error
+        } catch {
+            throw RecorderError.depthSerializationFailed(error.localizedDescription)
         }
 
-        // 3. Append pose sample.
+        // 4. Append pose sample.
         let transform = StockpileCaptureBundleTransform(
             matrix4x4: matrixComponents(cameraTransform),
             translationMeters: StockpileCaptureBundleVector3(
@@ -244,6 +252,8 @@ final class StockpileCaptureBundleRecorder: @unchecked Sendable {
             frameNumber: frameNumber,
             timestampSec: timestamp,
             transform: transform,
+            intrinsics: intrinsicsComponents(cameraIntrinsics),
+            lidarActive: true,
             trackingState: trackingState,
             trackingConfidence: trackingConfidence
         )
@@ -251,7 +261,7 @@ final class StockpileCaptureBundleRecorder: @unchecked Sendable {
         trackingStateCounts[trackingState, default: 0] += 1
         trackingConfidenceSum += trackingConfidence
 
-        // 4. Append frame index entry.
+        // 5. Append frame index entry.
         let entry = StockpileCaptureBundleFrameIndexEntry(
             frameID: frameID,
             frameNumber: frameNumber,
@@ -262,6 +272,12 @@ final class StockpileCaptureBundleRecorder: @unchecked Sendable {
             poseID: poseID
         )
         frameIndex.append(entry)
+
+        frameCount += 1
+        lastPersistedFrameTimestamp = timestamp
+        if let quickEstimate {
+            lastQuickEstimate = quickEstimate
+        }
 
         return frameNumber
     }
@@ -396,10 +412,18 @@ final class StockpileCaptureBundleRecorder: @unchecked Sendable {
 
     private func matrixComponents(_ matrix: simd_float4x4) -> [Float] {
         [
-            matrix.columns.0.x, matrix.columns.0.y, matrix.columns.0.z, matrix.columns.0.w,
-            matrix.columns.1.x, matrix.columns.1.y, matrix.columns.1.z, matrix.columns.1.w,
-            matrix.columns.2.x, matrix.columns.2.y, matrix.columns.2.z, matrix.columns.2.w,
-            matrix.columns.3.x, matrix.columns.3.y, matrix.columns.3.z, matrix.columns.3.w,
+            matrix.columns.0.x, matrix.columns.1.x, matrix.columns.2.x, matrix.columns.3.x,
+            matrix.columns.0.y, matrix.columns.1.y, matrix.columns.2.y, matrix.columns.3.y,
+            matrix.columns.0.z, matrix.columns.1.z, matrix.columns.2.z, matrix.columns.3.z,
+            matrix.columns.0.w, matrix.columns.1.w, matrix.columns.2.w, matrix.columns.3.w,
+        ]
+    }
+
+    private func intrinsicsComponents(_ matrix: simd_float3x3) -> [Float] {
+        [
+            matrix.columns.0.x, matrix.columns.1.x, matrix.columns.2.x,
+            matrix.columns.0.y, matrix.columns.1.y, matrix.columns.2.y,
+            matrix.columns.0.z, matrix.columns.1.z, matrix.columns.2.z,
         ]
     }
 }
