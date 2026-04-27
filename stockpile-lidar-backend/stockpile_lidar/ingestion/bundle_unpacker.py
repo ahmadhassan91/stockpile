@@ -34,6 +34,8 @@ def unpack_stockpile_capture(bundle_path: str | Path, output_dir: str | Path) ->
         _require_bundle_layout(members)
 
         manifest = _load_json(archive, members, "manifest.json")
+        if isinstance(manifest, dict):
+            _normalize_manifest(manifest)
         poses = _load_poses(archive, members)
         rgb_members = _frame_members(members, "rgb")
         depth_members = _frame_members(members, "depth")
@@ -99,9 +101,9 @@ def _load_poses(
 ) -> list:
     poses_payload = _load_json(archive, members, "poses.json")
     if isinstance(poses_payload, list):
-        return poses_payload
+        return _normalize_poses(poses_payload)
     if isinstance(poses_payload, dict) and isinstance(poses_payload.get("poses"), list):
-        return poses_payload["poses"]
+        return _normalize_poses(poses_payload["poses"])
     raise BundleValidationError("poses.json must be a list or contain a poses list")
 
 
@@ -127,9 +129,9 @@ def _validate_manifest(
         raise BundleValidationError("manifest.json must contain an object")
 
     schema_version = manifest.get("schema_version")
-    if schema_version != SUPPORTED_SCHEMA_VERSION:
+    if schema_version not in {SUPPORTED_SCHEMA_VERSION, "1.0"}:
         raise BundleValidationError(
-            f"manifest.json schema_version must be {SUPPORTED_SCHEMA_VERSION}"
+            f"manifest.json schema_version must be {SUPPORTED_SCHEMA_VERSION} or 1.0"
         )
 
     frame_count = manifest.get("frame_count")
@@ -144,6 +146,96 @@ def _validate_manifest(
 
     if manifest.get("depth_dtype") != "float16":
         raise BundleValidationError("manifest.json depth_dtype must be float16")
+
+
+def _normalize_manifest(manifest: dict) -> None:
+    """Accept the richer iOS bundle manifest while preserving v1 fields."""
+
+    frame_index = manifest.get("frame_index")
+    if isinstance(frame_index, list):
+        manifest.setdefault("frame_count", len(frame_index))
+
+        first_rgb = _first_nested_dict(frame_index, "rgb")
+        if first_rgb is not None:
+            manifest.setdefault(
+                "rgb",
+                {
+                    "width": first_rgb.get("width"),
+                    "height": first_rgb.get("height"),
+                    "format": "jpeg",
+                    "quality": 85,
+                },
+            )
+
+        first_depth = _first_nested_dict(frame_index, "depth")
+        if first_depth is not None:
+            manifest.setdefault(
+                "depth",
+                {
+                    "width": first_depth.get("width"),
+                    "height": first_depth.get("height"),
+                    "dtype": "float16",
+                    "smoothed": first_depth.get("is_smoothed"),
+                },
+            )
+            manifest.setdefault("depth_dtype", "float16")
+
+    tracking_summary = manifest.get("tracking_summary")
+    if (
+        "tracking_state_summary" not in manifest
+        and isinstance(tracking_summary, dict)
+    ):
+        manifest["tracking_state_summary"] = {
+            "normal": tracking_summary.get("tracked_frame_count", 0),
+            "limited": tracking_summary.get("limited_frame_count", 0),
+            "notAvailable": tracking_summary.get("lost_frame_count", 0),
+        }
+
+    quick_estimate = manifest.get("on_device_quick_estimate")
+    if isinstance(quick_estimate, dict):
+        _normalize_quick_estimate(quick_estimate)
+
+
+def _normalize_quick_estimate(payload: dict) -> None:
+    aliases = {
+        "volume_m3": "volumeM3",
+        "footprint_area_m2": "footprintAreaM2",
+        "peak_height_m": "peakHeightM",
+        "confidence_score": "confidenceScore",
+        "sampled_point_count": "sampledPointCount",
+        "camera_path_distance_m": "cameraPathDistanceM",
+    }
+    for canonical, legacy in aliases.items():
+        if canonical not in payload and legacy in payload:
+            payload[canonical] = payload[legacy]
+
+
+def _first_nested_dict(items: list, key: str) -> dict | None:
+    for item in items:
+        if isinstance(item, dict) and isinstance(item.get(key), dict):
+            return item[key]
+    return None
+
+
+def _normalize_poses(poses: list) -> list:
+    normalized: list = []
+    for pose in poses:
+        if not isinstance(pose, dict):
+            normalized.append(pose)
+            continue
+        entry = dict(pose)
+        if "timestamp" not in entry and "timestamp_sec" in entry:
+            entry["timestamp"] = entry["timestamp_sec"]
+
+        transform = entry.get("transform")
+        if isinstance(transform, dict) and "matrix_4x4" in transform:
+            entry["transform"] = transform["matrix_4x4"]
+
+        if "lidar_active" not in entry and "lidarActive" in entry:
+            entry["lidar_active"] = entry["lidarActive"]
+
+        normalized.append(entry)
+    return normalized
 
 
 def _validate_depth_frames(
