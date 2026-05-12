@@ -11,6 +11,8 @@ from stockpile_lidar.pipeline import (
     JOB_STORE,
     RESULT_STORE,
     LidarPipeline,
+    _crop_point_cloud_to_capture_roi,
+    _ground_anchor_positions,
     reset_state,
 )
 from stockpile_lidar.quality import QualityAssessment
@@ -35,6 +37,9 @@ def _build_bundle(tmp_path: Path, **manifest_overrides) -> StockpileCaptureBundl
         "frame_count": 4,
         "depth_dtype": "float16",
         "tracking_state_summary": "normal",
+        "depth_confidence_pct": 91.5,
+        "uncertainty": {"volume_m3": 0.8},
+        "repeatability": {"coefficient_pct": 4.2},
         "on_device_quick_estimate": {
             "volume_m3": 12.5,
             "footprint_area_m2": 8.0,
@@ -49,6 +54,7 @@ def _build_bundle(tmp_path: Path, **manifest_overrides) -> StockpileCaptureBundl
         poses=[],
         rgb_frames=[],
         depth_frames=[],
+        validation_warnings=[],
     )
 
 
@@ -67,8 +73,11 @@ def test_process_capture_returns_v1_compatible_result(tmp_path):
     assert submission.status == "completed"
     result = submission.result
     assert result["stage"] == "complete"
-    assert result["publishable"] is True
-    assert result["review_grade"] is False
+    assert result["result_label"] == "review_only"
+    assert result["measurement_status"] == "review_only"
+    assert result["provisional"] is True
+    assert result["publishable"] is False
+    assert result["review_grade"] is True
     assert result["weight_kg"] == pytest.approx(12.5 * 1500.0)
     assert result["scale_factor_m_per_unit"] == 1.0
     assert result["scale_source"] == "lidar_native"
@@ -90,7 +99,14 @@ def test_process_capture_returns_v1_compatible_result(tmp_path):
     assert diagnostics["capture_id"] == "cap_test_quick"
     assert diagnostics["site_id"] == "site_alpha"
     assert diagnostics["material_code"] == "GRAVEL"
+    assert diagnostics["density_kg_per_m3"] == pytest.approx(1500.0)
     assert diagnostics["frame_count"] == 4
+    assert diagnostics["tracking_normal_pct"] == pytest.approx(100.0)
+    assert diagnostics["depth_confidence_pct"] == pytest.approx(91.5)
+    assert diagnostics["fused_point_count"] == 0
+    assert diagnostics["pile_point_count"] == 0
+    assert diagnostics["uncertainty"] == {"volume_m3": 0.8}
+    assert diagnostics["repeatability"] == {"coefficient_pct": 4.2}
     assert diagnostics["on_device_quick_estimate"]["volume_m3"] == pytest.approx(12.5)
 
 
@@ -125,7 +141,8 @@ def test_process_capture_handles_missing_quick_estimate_safely(tmp_path):
     assert result["weight_kg"] == pytest.approx(0.0)
     assert result["volume"]["recommended_m3"] == pytest.approx(0.0)
     assert result["calibration"]["confidence"] == pytest.approx(0.0)
-    assert result["publishable"] is True
+    assert result["result_label"] == "review_only"
+    assert result["publishable"] is False
 
 
 def test_process_capture_prefers_backend_tsdf_volume_when_available(tmp_path, monkeypatch):
@@ -207,8 +224,8 @@ def test_process_capture_prefers_backend_tsdf_volume_when_available(tmp_path, mo
         assert manifest["poses"] == []
         return QualityAssessment(
             publishable=True,
-            review_grade=True,
-            warnings=["review backend fused capture"],
+            review_grade=False,
+            warnings=[],
             blockers=[],
         )
 
@@ -223,18 +240,194 @@ def test_process_capture_prefers_backend_tsdf_volume_when_available(tmp_path, mo
     result = submission.result
 
     assert result["weight_kg"] == pytest.approx(4.2 * 1500.0)
+    assert result["result_label"] == "verified"
+    assert result["measurement_status"] == "verified"
+    assert result["provisional"] is False
     assert result["publishable"] is True
-    assert result["review_grade"] is True
+    assert result["review_grade"] is False
     assert result["num_colmap_points"] == 4
     assert result["num_colmap_images"] == 2
     assert result["volume"]["recommended_m3"] == pytest.approx(4.2)
     assert result["volume"]["recommended_method"] == "grid_integration"
     assert result["calibration"]["selected_method"] == "lidar_tsdf_fusion"
-    assert result["quality_warnings"] == ["review backend fused capture"]
+    assert result["quality_warnings"] == []
     diagnostics = result["diagnostics"]
     assert diagnostics["backend_volume_source"] == "tsdf_fusion"
+    assert diagnostics["density_kg_per_m3"] == pytest.approx(1500.0)
+    assert diagnostics["tracking_normal_pct"] == pytest.approx(90.0)
+    assert diagnostics["depth_confidence_pct"] == pytest.approx(91.5)
     assert diagnostics["fused_frame_count"] == 2
     assert diagnostics["skipped_frame_count"] == 1
     assert diagnostics["fused_point_count"] == 4
     assert diagnostics["pile_point_count"] == 3
     assert diagnostics["ground_point_count"] == 1
+
+
+def test_process_capture_marks_blocked_backend_quality_as_rejected(tmp_path, monkeypatch):
+    bundle = _build_bundle(tmp_path)
+    fused_cloud = _make_pcd(
+        np.array(
+            [
+                [0.0, 0.0, 0.0],
+                [1.0, 0.0, 0.2],
+                [0.0, 1.0, 0.3],
+            ]
+        )
+    )
+    pile_cloud = _make_pcd(np.array([[0.0, 0.0, 0.2], [1.0, 0.0, 0.3]]))
+    ground_cloud = _make_pcd(np.array([[0.0, 0.0, 0.0]]))
+
+    monkeypatch.setattr(
+        "stockpile_lidar.pipeline.fuse_capture_bundle",
+        lambda captured_bundle, config: TSDFFusionResult(
+            point_cloud=fused_cloud,
+            fused_frame_count=2,
+            skipped_frame_count=0,
+            voxel_size=0.02,
+            sdf_trunc=0.04,
+        ),
+    )
+    monkeypatch.setattr(
+        "stockpile_lidar.pipeline.segment_pile",
+        lambda point_cloud, config, ground_anchor_positions=None: SimpleNamespace(
+            pile_cloud=pile_cloud,
+            ground_cloud=ground_cloud,
+            full_cloud_transformed=fused_cloud,
+            inlier_ratio=0.75,
+        ),
+    )
+    monkeypatch.setattr(
+        "stockpile_lidar.pipeline.compute_volume",
+        lambda point_cloud, config, *, full_scene_cloud=None, footprint_points=None: VolumeResult(
+            convex_hull_m3=4.0,
+            alpha_shape_m3=None,
+            grid_integration_m3=4.2,
+            recommended_m3=4.2,
+            recommended_method="grid_integration",
+            recommended_note=None,
+            grid_resolution=0.05,
+            num_points=2,
+            grid_occupancy_pct=77.0,
+            grid_cells_observed=77,
+            grid_cells_total=100,
+            grid_interpolated=True,
+            grid_to_hull_ratio=1.05,
+            footprint_area_m2=2.5,
+            footprint_source="toe_hybrid",
+        ),
+    )
+    monkeypatch.setattr(
+        "stockpile_lidar.pipeline.assess_quality",
+        lambda point_cloud, volume, manifest, config: QualityAssessment(
+            publishable=False,
+            review_grade=False,
+            warnings=[],
+            blockers=["capture has insufficient usable depth frames"],
+        ),
+    )
+
+    submission = LidarPipeline().process_capture(bundle)
+    result = submission.result
+
+    assert result["result_label"] == "rejected"
+    assert result["measurement_status"] == "rejected"
+    assert result["provisional"] is False
+    assert result["publishable"] is False
+    assert result["review_grade"] is False
+    assert result["quality_blockers"] == ["capture has insufficient usable depth frames"]
+
+
+def test_capture_roi_crop_removes_far_scene_points(tmp_path):
+    bundle = _build_bundle(
+        tmp_path,
+        on_device_quick_estimate={
+            "volume_m3": 20.0,
+            "footprint_area_m2": 25.0,
+            "peak_height_m": 2.0,
+            "confidence_score": 0.9,
+        },
+    )
+    near_points = np.array(
+        [
+            [0.0, 0.0, 0.0],
+            [1.0, 1.0, 0.5],
+            [-1.0, 1.0, 0.7],
+            [1.0, -1.0, 0.2],
+        ]
+    )
+    far_points = np.array(
+        [
+            [30.0, 30.0, 0.0],
+            [32.0, 30.0, 1.0],
+        ]
+    )
+    cloud = _make_pcd(np.vstack([near_points, far_points]))
+
+    cropped, diagnostics = _crop_point_cloud_to_capture_roi(
+        cloud,
+        bundle.manifest,
+        min_points=1,
+    )
+
+    cropped_points = np.asarray(cropped.points)
+    assert len(cropped_points) == len(near_points)
+    assert diagnostics["roi_crop_applied"] is True
+    assert diagnostics["roi_crop_input_points"] == 6
+    assert diagnostics["roi_crop_output_points"] == 4
+    assert diagnostics["roi_crop_radius_m"] > 0
+
+
+def test_capture_roi_crop_caps_inflated_small_pile_footprint(tmp_path):
+    bundle = _build_bundle(
+        tmp_path,
+        pile_size_mode="small",
+        on_device_quick_estimate={
+            "volume_m3": 250.0,
+            "footprint_area_m2": 42.0,
+            "peak_height_m": 9.0,
+            "confidence_score": 0.9,
+        },
+    )
+    near_points = np.array([[0.0, 0.0, 0.0], [1.0, 0.0, 0.3], [-1.0, 0.0, 0.2]])
+    background_points = np.array([[7.0, 0.0, 0.0], [-7.0, 0.0, 0.0]])
+    cloud = _make_pcd(np.vstack([near_points, background_points]))
+
+    cropped, diagnostics = _crop_point_cloud_to_capture_roi(
+        cloud,
+        bundle.manifest,
+        min_points=1,
+    )
+
+    cropped_points = np.asarray(cropped.points)
+    assert len(cropped_points) == len(near_points)
+    assert diagnostics["roi_crop_applied"] is True
+    assert diagnostics["roi_crop_radius_m"] == pytest.approx(3.5)
+
+
+def test_ground_anchor_positions_parse_ios_anchor_document(tmp_path):
+    anchors_path = tmp_path / "anchors.json"
+    anchors_path.write_text(
+        """
+        {
+          "schema_version": "1.0",
+          "ground_anchor_id": "anchor-ground-1234",
+          "anchors": [
+            {
+              "anchor_id": "anchor-ground-1234",
+              "anchor_type": "ground_plane",
+              "transform": {
+                "translation_meters": {"x": 1.5, "y": -0.2, "z": 3.25}
+              },
+              "extent_meters": {"width": 4.0, "height": 0.0, "depth": 5.0}
+            }
+          ]
+        }
+        """,
+        encoding="utf-8",
+    )
+    bundle = _build_bundle(tmp_path)
+
+    positions = _ground_anchor_positions(bundle)
+
+    assert len(positions) == 1
+    assert positions[0].tolist() == pytest.approx([1.5, -0.2, 3.25])

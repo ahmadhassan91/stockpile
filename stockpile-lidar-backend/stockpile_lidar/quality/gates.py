@@ -57,6 +57,8 @@ def assess_quality(
 
     blockers: list[str] = []
     warnings: list[str] = []
+    small_pile_mode = _is_small_pile_mode(manifest)
+    small_pile_manual_review = False
 
     def add_warning(message: str) -> None:
         if message not in warnings:
@@ -65,6 +67,11 @@ def assess_quality(
     def add_blocker(message: str) -> None:
         if message not in blockers:
             blockers.append(message)
+
+    def add_small_pile_warning(message: str) -> None:
+        nonlocal small_pile_manual_review
+        small_pile_manual_review = True
+        add_warning(message)
 
     # --- 1. Pile-point density --------------------------------------------------
     pile_pts = (
@@ -140,7 +147,23 @@ def assess_quality(
 
         # 5. Grid-to-hull ratio (and 6. combined tall-pile + ratio block)
         if volume.grid_to_hull_ratio is not None:
-            if volume.grid_to_hull_ratio > gates.max_grid_to_hull_block_ratio:
+            if volume.grid_to_hull_ratio < gates.min_grid_to_hull_block_ratio:
+                message = (
+                    f"Grid volume is only {volume.grid_to_hull_ratio:.2f}x the "
+                    "convex hull volume, which indicates the fused surface, "
+                    "ground plane, or toe boundary is inconsistent."
+                )
+                if small_pile_mode:
+                    add_small_pile_warning(message)
+                else:
+                    add_blocker(message)
+            elif volume.grid_to_hull_ratio < gates.min_grid_to_hull_warn_ratio:
+                add_warning(
+                    f"Grid volume is only {volume.grid_to_hull_ratio:.2f}x the "
+                    "convex hull volume; cross-check the reconstructed shape "
+                    "before reporting.",
+                )
+            elif volume.grid_to_hull_ratio > gates.max_grid_to_hull_block_ratio:
                 add_blocker(
                     f"Grid volume is {volume.grid_to_hull_ratio:.1f}x the convex "
                     "hull volume, which indicates runaway extrapolation.",
@@ -166,11 +189,108 @@ def assess_quality(
         if volume.recommended_note:
             add_warning(volume.recommended_note)
 
+        quick_volume = _quick_estimate_volume_m3(
+            _lookup(manifest, "on_device_quick_estimate", "quick_estimate"),
+        )
+        quick_payload = _lookup(manifest, "on_device_quick_estimate", "quick_estimate")
+        if _is_small_pile_mode(manifest):
+            if volume.recommended_m3 > gates.small_pile_volume_block_m3:
+                add_small_pile_warning(
+                    f"Small pile mode expected a compact sample pile, but backend "
+                    f"volume is {volume.recommended_m3:.2f} m3. Retake with only "
+                    "the pile inside the scan area.",
+                )
+            elif volume.recommended_m3 > gates.small_pile_volume_warn_m3:
+                add_small_pile_warning(
+                    f"Small pile mode backend volume is {volume.recommended_m3:.2f} "
+                    "m3; confirm this is not ground or background included in the "
+                    "pile.",
+                )
+
+            if volume.footprint_area_m2 > gates.small_pile_footprint_block_m2:
+                add_small_pile_warning(
+                    f"Small pile mode measured a {volume.footprint_area_m2:.2f} m2 "
+                    "footprint, which is too large for an office/sample pile. "
+                    "Retake closer and keep surrounding ground out of the pile area.",
+                )
+            elif volume.footprint_area_m2 > gates.small_pile_footprint_warn_m2:
+                add_small_pile_warning(
+                    f"Small pile mode measured a {volume.footprint_area_m2:.2f} m2 "
+                    "footprint; confirm the toe boundary is tight.",
+                )
+
+            small_height = max(pile_height_p99, _quick_estimate_peak_height_m(quick_payload) or 0.0)
+            if small_height > gates.small_pile_height_block_m:
+                add_small_pile_warning(
+                    f"Small pile mode saw {small_height:.2f} m height, which is too "
+                    "tall for a compact test pile. Step back, retake, and avoid "
+                    "walls, edges, or background surfaces in the pile region.",
+                )
+            elif small_height > gates.small_pile_height_warn_m:
+                add_small_pile_warning(
+                    f"Small pile mode saw {small_height:.2f} m height; inspect for "
+                    "a LiDAR spike before reporting.",
+                )
+
+            if quick_volume is not None:
+                if quick_volume > gates.small_pile_quick_estimate_volume_block_m3:
+                    add_small_pile_warning(
+                        f"Small pile mode phone LiDAR estimate is {quick_volume:.2f} "
+                        "m3, which is too large for a compact test pile. Retake "
+                        "with a tighter scan of the pile only.",
+                    )
+                elif quick_volume > gates.small_pile_quick_estimate_volume_warn_m3:
+                    add_small_pile_warning(
+                        f"Small pile mode phone LiDAR estimate is {quick_volume:.2f} "
+                        "m3; confirm the scan did not include surrounding ground.",
+                    )
+
+        if quick_volume is not None and volume.recommended_m3 > 1e-6:
+            disagreement = max(
+                quick_volume / volume.recommended_m3,
+                volume.recommended_m3 / quick_volume,
+            )
+            block_ratio = (
+                gates.small_pile_quick_estimate_volume_block_ratio
+                if _is_small_pile_mode(manifest)
+                else gates.quick_estimate_volume_block_ratio
+            )
+            warn_ratio = (
+                gates.small_pile_quick_estimate_volume_warn_ratio
+                if _is_small_pile_mode(manifest)
+                else gates.quick_estimate_volume_warn_ratio
+            )
+            if disagreement > block_ratio:
+                message = (
+                    f"Backend volume ({volume.recommended_m3:.2f} m3) disagrees "
+                    f"with the phone LiDAR estimate ({quick_volume:.2f} m3) by "
+                    f"{disagreement:.1f}x; retake or review with a reference."
+                )
+                if small_pile_mode:
+                    add_small_pile_warning(message)
+                else:
+                    add_blocker(message)
+            elif disagreement > warn_ratio:
+                message = (
+                    f"Backend volume ({volume.recommended_m3:.2f} m3) differs "
+                    f"from the phone LiDAR estimate ({quick_volume:.2f} m3) by "
+                    f"{disagreement:.1f}x; review before reporting."
+                )
+                if small_pile_mode:
+                    add_small_pile_warning(message)
+                else:
+                    add_warning(message)
+
     # --- 8. Tracking-state summary (LiDAR-specific) ----------------------------
     tracking_summary = _coerce_tracking_state_fractions(
         _lookup(manifest, "tracking_state_summary"),
     )
     if tracking_summary is not None:
+        if sum(tracking_summary.values()) <= 1e-9:
+            add_blocker(
+                "ARKit tracking summary contains no usable tracked frames; the "
+                "capture metadata is incomplete.",
+            )
         not_available_fraction = tracking_summary.get("notavailable", 0.0)
         limited_fraction = tracking_summary.get("limited", 0.0)
         if not_available_fraction > gates.max_tracking_not_available_block_fraction:
@@ -193,6 +313,15 @@ def assess_quality(
             f"frames (limit {gates.max_consecutive_missing_pose_frames_block}); "
             "the capture has a tracking gap that prevents reliable fusion.",
         )
+
+    if small_pile_manual_review:
+        note = (
+            "Manual review required: backend LiDAR volume is shown for comparison, "
+            "but this small-pile run should be checked against a known reference "
+            "before reporting."
+        )
+        if note not in warnings:
+            warnings.insert(0, note)
 
     publishable = not blockers
     review_grade = bool(warnings) and publishable
@@ -305,6 +434,63 @@ def _normalize_tracking_state(value: str) -> str | None:
     if raw in {"notavailable", "unavailable", "lost"}:
         return "notavailable"
     return None
+
+
+def _quick_estimate_volume_m3(payload: Any) -> float | None:
+    if payload is None:
+        return None
+    value: Any
+    if isinstance(payload, Mapping):
+        value = (
+            payload.get("volume_m3")
+            or payload.get("volumeM3")
+            or payload.get("recommended_m3")
+        )
+    else:
+        value = getattr(payload, "volume_m3", None)
+        if value is None:
+            value = getattr(payload, "volumeM3", None)
+    try:
+        volume = float(value)
+    except (TypeError, ValueError):
+        return None
+    if volume <= 1e-6:
+        return None
+    return volume
+
+
+def _quick_estimate_peak_height_m(payload: Any) -> float | None:
+    if payload is None:
+        return None
+    if isinstance(payload, Mapping):
+        value = payload.get("peak_height_m") or payload.get("peakHeightM")
+    else:
+        value = getattr(payload, "peak_height_m", None)
+        if value is None:
+            value = getattr(payload, "peakHeightM", None)
+    try:
+        height = float(value)
+    except (TypeError, ValueError):
+        return None
+    if height <= 1e-6:
+        return None
+    return height
+
+
+def _is_small_pile_mode(manifest: Any) -> bool:
+    raw = _lookup(
+        manifest,
+        "pile_size_mode",
+        "pileSizeMode",
+        "capture_profile",
+        "captureProfile",
+        "measurement_mode",
+        "measurementMode",
+    )
+    if raw is None:
+        return False
+    normalized = str(raw).strip().lower().replace("-", "_").replace(" ", "_")
+    return normalized in {"small", "small_pile", "office", "sample", "sample_pile"}
 
 
 def _max_consecutive_missing_poses(payload: Any) -> int:

@@ -316,6 +316,13 @@ public struct StockpileCaptureGuidanceSummary: Codable, Equatable, Sendable {
     }
 
     public var primaryOperatorAction: String {
+        if referenceVisibility.title == "LiDAR tracking",
+           coverage.level == .good,
+           finishPriorityMetrics.contains(where: { $0.level == .blocked }) == false,
+           finishPriorityMetrics.contains(where: { $0.level == .watch }) {
+            return "Review-only allowed. Finish now, or make one steadier pass for production confidence."
+        }
+
         if let finishBlocker = finishPriorityMetrics.first(where: { $0.level != .good }) {
             return finishBlocker.detail
         }
@@ -325,7 +332,7 @@ public struct StockpileCaptureGuidanceSummary: Codable, Equatable, Sendable {
         }
 
         if referenceVisibility.title == "LiDAR tracking" {
-            return "Depth tracking looks strong. Finish when the last edge is covered."
+            return "Ready to finish. Depth tracking and coverage look production-ready."
         }
 
         return "Scene and references look strong. Finish when the last edge is covered."

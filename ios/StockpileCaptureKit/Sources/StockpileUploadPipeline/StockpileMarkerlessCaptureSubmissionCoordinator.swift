@@ -51,17 +51,23 @@ public struct StockpileMarkerlessCaptureSubmissionRequest: Equatable, Sendable {
     public let captureID: String
     public let siteID: String
     public let materialCode: String
+    public let densityKgPerM3: Int
+    public let pileSizeMode: String?
 
     public init(
         archiveURL: URL,
         captureID: String,
         siteID: String,
-        materialCode: String
+        materialCode: String,
+        densityKgPerM3: Int,
+        pileSizeMode: String? = nil
     ) {
         self.archiveURL = archiveURL
         self.captureID = captureID
         self.siteID = siteID
         self.materialCode = materialCode
+        self.densityKgPerM3 = densityKgPerM3
+        self.pileSizeMode = pileSizeMode
     }
 }
 
@@ -121,7 +127,9 @@ public actor StockpileMarkerlessCaptureSubmissionCoordinator {
                 at: request.archiveURL,
                 captureID: request.captureID,
                 siteID: request.siteID,
-                materialCode: request.materialCode
+                materialCode: request.materialCode,
+                densityKgPerM3: request.densityKgPerM3,
+                pileSizeMode: request.pileSizeMode
             )
             state = .submitted(receipt: receipt)
             return receipt

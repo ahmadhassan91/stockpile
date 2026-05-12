@@ -37,6 +37,10 @@ final class StockpileCaptureBundleContractTests: XCTestCase {
 
         let manifest = StockpileCaptureBundleManifestBuilder(
             captureID: "capture-123",
+            siteID: "qpmc-yard-3",
+            materialCode: "sand",
+            densityKgPerM3: 1600,
+            pileSizeMode: "small",
             createdAt: Date(timeIntervalSince1970: 100),
             device: StockpileCaptureBundleDeviceMetadata(
                 manufacturer: "Apple",
@@ -70,6 +74,10 @@ final class StockpileCaptureBundleContractTests: XCTestCase {
         XCTAssertEqual(manifest.manifestFileName, "manifest.json")
         XCTAssertEqual(manifest.posesFileName, "poses.json")
         XCTAssertEqual(manifest.anchorsFileName, "anchors.json")
+        XCTAssertEqual(manifest.siteID, "qpmc-yard-3")
+        XCTAssertEqual(manifest.materialCode, "sand")
+        XCTAssertEqual(manifest.densityKgPerM3, 1600)
+        XCTAssertEqual(manifest.pileSizeMode, "small")
         XCTAssertEqual(manifest.frameIndex, [frame])
         XCTAssertEqual(manifest.trackingSummary.trackingRatio, 0.8, accuracy: 0.0001)
         XCTAssertEqual(manifest.groundAnchorID, "anchor-ground")
@@ -81,8 +89,20 @@ final class StockpileCaptureBundleContractTests: XCTestCase {
         XCTAssertEqual(payload["manifest_file"] as? String, "manifest.json")
         XCTAssertEqual(payload["poses_file"] as? String, "poses.json")
         XCTAssertEqual(payload["anchors_file"] as? String, "anchors.json")
+        XCTAssertEqual(payload["site_id"] as? String, "qpmc-yard-3")
+        XCTAssertEqual(payload["material_code"] as? String, "sand")
+        XCTAssertEqual(payload["density_kg_per_m3"] as? Int, 1600)
+        XCTAssertEqual(payload["pile_size_mode"] as? String, "small")
         XCTAssertEqual(payload["ground_anchor_id"] as? String, "anchor-ground")
         XCTAssertNotNil(payload["on_device_quick_estimate"])
+
+        let trackingSummary = try XCTUnwrap(payload["tracking_summary"] as? [String: Any])
+        XCTAssertEqual(trackingSummary["total_frame_count"] as? Int, 10)
+        XCTAssertEqual(trackingSummary["tracked_frame_count"] as? Int, 8)
+        XCTAssertEqual(trackingSummary["limited_frame_count"] as? Int, 2)
+        XCTAssertEqual(trackingSummary["lost_frame_count"] as? Int, 0)
+        XCTAssertEqual(try XCTUnwrap(trackingSummary["tracking_ratio"] as? Double), 0.8, accuracy: 0.0001)
+        XCTAssertNil(trackingSummary["trackedFrameCount"])
 
         let frameIndex = try XCTUnwrap(payload["frame_index"] as? [[String: Any]])
         XCTAssertEqual(frameIndex.first?["frame_id"] as? String, "frame-000042")
@@ -143,6 +163,8 @@ final class StockpileCaptureBundleContractTests: XCTestCase {
         let documents = StockpileCaptureBundleBuilder(
             manifest: StockpileCaptureBundleManifestBuilder(
                 captureID: "capture-123",
+                materialCode: "backfill",
+                densityKgPerM3: StockpileCaptureBundleMaterialPreset.backfill.defaultDensityKgPerM3,
                 createdAt: Date(timeIntervalSince1970: 100),
                 device: StockpileCaptureBundleDeviceMetadata(
                     manufacturer: "Apple",
@@ -171,5 +193,74 @@ final class StockpileCaptureBundleContractTests: XCTestCase {
         let encoded = try documents.encodedJSONFiles()
         XCTAssertEqual(Set(encoded.keys), ["manifest.json", "poses.json", "anchors.json"])
         XCTAssertTrue(try XCTUnwrap(String(data: encoded["manifest.json"] ?? Data(), encoding: .utf8)).contains("\"schema_version\":\"1.0\""))
+    }
+
+    func testMaterialPresetsAreCanonicalAndDensityCanBeEditedWithinSaneBounds() {
+        XCTAssertEqual(
+            StockpileCaptureBundleMaterialPreset.allCases.map(\.rawValue),
+            ["sand", "gravel", "backfill", "aggregate", "soil", "other"]
+        )
+        XCTAssertTrue(StockpileCaptureBundleMaterialPreset.contains(code: " Sand "))
+        XCTAssertFalse(StockpileCaptureBundleMaterialPreset.contains(code: "backfill-0-75-mm"))
+        XCTAssertTrue(StockpileCaptureBundleMaterialPreset.densityIsInSaneBounds(1_750))
+        XCTAssertFalse(StockpileCaptureBundleMaterialPreset.densityIsInSaneBounds(0))
+        XCTAssertFalse(StockpileCaptureBundleMaterialPreset.densityIsInSaneBounds(3_001))
+    }
+
+    func testManifestPreservesExplicitMaterialInputsWithoutSilentFallbackOrDensityClamp() throws {
+        let manifest = StockpileCaptureBundleManifestBuilder(
+            captureID: "capture-123",
+            materialCode: "  ",
+            densityKgPerM3: 0,
+            createdAt: Date(timeIntervalSince1970: 100),
+            device: StockpileCaptureBundleDeviceMetadata(
+                manufacturer: "Apple",
+                modelIdentifier: "iPhone16,2",
+                operatingSystem: "iOS",
+                operatingSystemVersion: "18.4"
+            ),
+            frameIndex: [],
+            trackingSummary: .empty,
+            groundAnchorID: "anchor-ground"
+        ).build()
+
+        XCTAssertEqual(manifest.materialCode, "")
+        XCTAssertEqual(manifest.densityKgPerM3, 0)
+
+        let payload = try StockpileCaptureBundleJSONEncoder().encodeJSONObject(manifest)
+        XCTAssertEqual(payload["material_code"] as? String, "")
+        XCTAssertEqual(payload["density_kg_per_m3"] as? Int, 0)
+    }
+
+    func testVisionMaterialSuggestionSerializesSeparatelyFromUserSelectedMaterial() throws {
+        let manifest = StockpileCaptureBundleManifestBuilder(
+            captureID: "capture-123",
+            materialCode: "gravel",
+            densityKgPerM3: 1_850,
+            createdAt: Date(timeIntervalSince1970: 100),
+            device: StockpileCaptureBundleDeviceMetadata(
+                manufacturer: "Apple",
+                modelIdentifier: "iPhone16,2",
+                operatingSystem: "iOS",
+                operatingSystemVersion: "18.4"
+            ),
+            frameIndex: [],
+            trackingSummary: .empty,
+            groundAnchorID: "anchor-ground",
+            visionMaterialSuggestion: StockpileCaptureBundleVisionMaterialSuggestion(
+                suggestedMaterialCode: "sand",
+                confidenceScore: 0.64,
+                source: "vision_foreground_instance_mask"
+            )
+        ).build()
+
+        XCTAssertEqual(manifest.materialCode, "gravel")
+        XCTAssertEqual(manifest.visionMaterialSuggestion?.suggestedMaterialCode, "sand")
+
+        let payload = try StockpileCaptureBundleJSONEncoder().encodeJSONObject(manifest)
+        XCTAssertEqual(payload["material_code"] as? String, "gravel")
+        let suggestion = try XCTUnwrap(payload["vision_material_suggestion"] as? [String: Any])
+        XCTAssertEqual(suggestion["suggested_material_code"] as? String, "sand")
+        XCTAssertEqual(suggestion["source"] as? String, "vision_foreground_instance_mask")
     }
 }

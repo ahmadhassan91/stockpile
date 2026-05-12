@@ -224,6 +224,7 @@ struct CaptureFeatureConfiguration {
         var siteID: String
         var materialCode: String
         var densityKgPerM3: Int
+        var pileSizeMode: CapturePileSizeMode
         var referenceCountGoal: Int
         var clientBuild: String
         var backgroundSessionIdentifier: String?
@@ -234,8 +235,9 @@ struct CaptureFeatureConfiguration {
 
         static let preview = CaptureFeaturePipelineConfiguration(
             siteID: "qpmc-north-yard",
-            materialCode: "backfill-0-75-mm",
+            materialCode: "backfill",
             densityKgPerM3: 2100,
+            pileSizeMode: .small,
             referenceCountGoal: 3,
             clientBuild: "ios-preview",
             backgroundSessionIdentifier: "com.clustox.stockpile.capture.upload",
@@ -269,6 +271,63 @@ struct CaptureFeatureConfiguration {
         terminalResultPhase: .blockedResult,
         pipeline: .preview
     )
+}
+
+struct CaptureMaterialOption: Identifiable, Equatable, Sendable {
+    let id: String
+    let displayName: String
+    let materialCode: String
+    let densityKgPerM3: Int
+
+    init(displayName: String, materialCode: String, densityKgPerM3: Int) {
+        self.id = materialCode
+        self.displayName = displayName
+        self.materialCode = materialCode
+        self.densityKgPerM3 = max(1, densityKgPerM3)
+    }
+
+    static let clientSafeOptions: [CaptureMaterialOption] = [
+        CaptureMaterialOption(displayName: "Backfill", materialCode: "backfill", densityKgPerM3: 2100),
+        CaptureMaterialOption(displayName: "Sand", materialCode: "sand", densityKgPerM3: 1600),
+        CaptureMaterialOption(displayName: "Gravel", materialCode: "gravel", densityKgPerM3: 1500),
+        CaptureMaterialOption(displayName: "Aggregate", materialCode: "aggregate", densityKgPerM3: 1650),
+        CaptureMaterialOption(displayName: "Soil", materialCode: "soil", densityKgPerM3: 1800),
+        CaptureMaterialOption(displayName: "Other", materialCode: "other", densityKgPerM3: 1700),
+    ]
+}
+
+enum CapturePileSizeMode: String, CaseIterable, Identifiable, Sendable {
+    case small
+    case stockpile
+
+    var id: String { rawValue }
+
+    var displayName: String {
+        switch self {
+        case .small:
+            return "Small pile"
+        case .stockpile:
+            return "Stockpile"
+        }
+    }
+
+    var shortLabel: String {
+        switch self {
+        case .small:
+            return "Small"
+        case .stockpile:
+            return "Yard"
+        }
+    }
+
+    var guidance: String {
+        switch self {
+        case .small:
+            return "Compact office/sample pile. Blocks stockpile-scale geometry."
+        case .stockpile:
+            return "QPMC field pile. Uses normal yard-scale quality gates."
+        }
+    }
 }
 
 private struct CaptureSelectedMovieStorage: Sendable {
@@ -444,6 +503,18 @@ private struct CaptureFeatureReferenceMarkerContext {
 }
 
 private enum CaptureFeatureTrace {
+    private static let traceFileURL: URL = {
+        let docs = FileManager.default.urls(for: .documentDirectory, in: .userDomainMask).first
+            ?? URL(fileURLWithPath: NSTemporaryDirectory())
+        return docs.appendingPathComponent("stockpile_recording_trace.log")
+    }()
+    private static let lock = NSLock()
+    private static let dateFormatter: DateFormatter = {
+        let f = DateFormatter()
+        f.dateFormat = "HH:mm:ss.SSS"
+        return f
+    }()
+
     static func log(_ event: String, state: StockpileCameraCaptureSessionState? = nil, details: String = "") {
         var parts = [event]
         if let state {
@@ -461,7 +532,418 @@ private enum CaptureFeatureTrace {
         if details.isEmpty == false {
             parts.append(details)
         }
-        NSLog("STOCKPILE_CAPTURE_TRACE %@", parts.joined(separator: " | "))
+        let line = parts.joined(separator: " | ")
+        NSLog("STOCKPILE_CAPTURE_TRACE %@", line)
+        appendToFile(line)
+    }
+
+    private static func appendToFile(_ line: String) {
+        let stamped = "[\(dateFormatter.string(from: Date()))] \(line)\n"
+        guard let data = stamped.data(using: .utf8) else { return }
+        lock.lock()
+        defer { lock.unlock() }
+        if FileManager.default.fileExists(atPath: traceFileURL.path) {
+            if let handle = try? FileHandle(forWritingTo: traceFileURL) {
+                handle.seekToEndOfFile()
+                handle.write(data)
+                try? handle.close()
+            }
+        } else {
+            try? data.write(to: traceFileURL, options: .atomic)
+        }
+    }
+}
+
+private enum StockpileMarkerlessV2ResultError: Error, LocalizedError, Sendable, Equatable {
+    case nonHTTPResponse
+    case httpError(statusCode: Int, body: String)
+    case decodeFailed(String)
+    case missingResultID(jobID: String)
+    case jobDidNotComplete(jobID: String, status: String)
+
+    var errorDescription: String? {
+        switch self {
+        case .nonHTTPResponse:
+            return "Markerless result lookup received a non-HTTP response."
+        case let .httpError(statusCode, body):
+            let trimmed = body.trimmingCharacters(in: .whitespacesAndNewlines)
+            return trimmed.isEmpty
+                ? "Markerless result lookup failed with HTTP \(statusCode)."
+                : "Markerless result lookup failed with HTTP \(statusCode): \(trimmed)"
+        case let .decodeFailed(detail):
+            return "Markerless result lookup returned an unreadable response: \(detail)"
+        case let .missingResultID(jobID):
+            return "Markerless backend job \(jobID) completed without a result id."
+        case let .jobDidNotComplete(jobID, status):
+            return "Markerless backend job \(jobID) did not complete in time. Last status: \(status)."
+        }
+    }
+}
+
+private struct StockpileMarkerlessV2JobPayload: Decodable, Sendable, Equatable {
+    let jobID: String
+    let status: String
+    let resultID: String?
+
+    enum CodingKeys: String, CodingKey {
+        case jobID = "job_id"
+        case status
+        case resultID = "result_id"
+    }
+}
+
+private struct StockpileMarkerlessV2ResultPayload: Decodable, Sendable, Equatable {
+    let resultID: String
+    let stage: String?
+    let resultLabel: String?
+    let publishable: Bool
+    let reviewGrade: Bool
+    let weightKg: Double?
+    let volume: Volume?
+    let qualityBlockers: [String]
+    let qualityWarnings: [String]
+    let diagnostics: Diagnostics?
+
+    enum CodingKeys: String, CodingKey {
+        case resultID = "result_id"
+        case stage
+        case resultLabel = "result_label"
+        case publishable
+        case reviewGrade = "review_grade"
+        case weightKg = "weight_kg"
+        case volume
+        case qualityBlockers = "quality_blockers"
+        case qualityWarnings = "quality_warnings"
+        case diagnostics
+    }
+
+    struct Volume: Decodable, Sendable, Equatable {
+        let recommendedM3: Double?
+        let recommendedMethod: String?
+        let gridOccupancyPct: Double?
+        let footprintAreaM2: Double?
+        let numPoints: Int?
+
+        enum CodingKeys: String, CodingKey {
+            case recommendedM3 = "recommended_m3"
+            case recommendedMethod = "recommended_method"
+            case gridOccupancyPct = "grid_occupancy_pct"
+            case footprintAreaM2 = "footprint_area_m2"
+            case numPoints = "num_points"
+        }
+    }
+
+    struct Diagnostics: Decodable, Sendable, Equatable {
+        let captureID: String?
+        let siteID: String?
+        let materialCode: String?
+        let frameCount: Int?
+        let fusedFrameCount: Int?
+        let fusedPointCount: Int?
+        let pilePointCount: Int?
+
+        enum CodingKeys: String, CodingKey {
+            case captureID = "capture_id"
+            case siteID = "site_id"
+            case materialCode = "material_code"
+            case frameCount = "frame_count"
+            case fusedFrameCount = "fused_frame_count"
+            case fusedPointCount = "fused_point_count"
+            case pilePointCount = "pile_point_count"
+        }
+    }
+
+    var outcome: StockpileRunOutcome {
+        let normalizedLabel = resultLabel?
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+            .lowercased()
+            .replacingOccurrences(of: "-", with: "_")
+
+        if normalizedLabel == "verified" {
+            return .verified
+        }
+        if normalizedLabel == "review_only" || reviewGrade {
+            return .reviewOnly
+        }
+        if qualityBlockers.isEmpty == false || publishable == false {
+            return .blocked
+        }
+        return qualityWarnings.isEmpty == false ? .reviewOnly : .verified
+    }
+
+    func mobileResultPayload(
+        fallbackPileName: String,
+        fallbackDensityKgPerM3: Int,
+        jobID: String
+    ) -> StockpileResultPayload {
+        let volumeM3 = volume?.recommendedM3
+        let derivedDensity = Self.derivedDensityKgPerM3(
+            volumeM3: volumeM3,
+            weightKg: weightKg,
+            fallback: fallbackDensityKgPerM3
+        )
+        let measurement = Self.measurement(
+            volumeM3: volumeM3,
+            weightKg: weightKg,
+            densityKgPerM3: derivedDensity
+        )
+        let confidenceScore = Self.confidenceScore(
+            outcome: outcome,
+            warnings: qualityWarnings,
+            blockers: qualityBlockers
+        )
+
+        return StockpileResultPayload(
+            runID: resultID,
+            pileName: fallbackPileName,
+            outcome: outcome,
+            confidence: StockpileConfidencePayload(
+                score: confidenceScore,
+                label: outcome == .verified ? "Backend verified" : "Backend review",
+                summary: confidenceSummary
+            ),
+            measurement: measurement,
+            warnings: qualityWarnings,
+            blockers: qualityBlockers,
+            recommendedAction: recommendedAction,
+            captureQuality: StockpileCaptureQualityPayload(
+                referenceVisibilityScore: nil,
+                perimeterCoverageScore: nil,
+                motionStabilityScore: nil,
+                overallGuidanceScore: Double(confidenceScore) / 100.0
+            ),
+            referenceDiagnostics: nil,
+            provisionalMeasurement: nil,
+            reconstruction: reconstructionPayload(
+                volumeM3: volumeM3,
+                outcome: outcome
+            ),
+            reportURL: nil,
+            updatedAt: Date(),
+            siteID: diagnostics?.siteID,
+            sessionID: diagnostics?.captureID,
+            jobID: jobID
+        )
+    }
+
+    private var confidenceSummary: String {
+        var parts: [String] = []
+        if let volumeM3 = volume?.recommendedM3 {
+            parts.append(String(format: "Backend LiDAR fusion measured %.2f m³.", volumeM3))
+        } else {
+            parts.append("Backend LiDAR fusion completed.")
+        }
+        if let fusedFrameCount = diagnostics?.fusedFrameCount ?? diagnostics?.frameCount {
+            parts.append("\(fusedFrameCount) frames contributed to the result.")
+        }
+        if let fusedPointCount = diagnostics?.fusedPointCount {
+            parts.append("\(fusedPointCount) fused points were evaluated.")
+        }
+        if qualityWarnings.isEmpty == false {
+            parts.append("Warnings: \(qualityWarnings.joined(separator: ", ")).")
+        }
+        return parts.joined(separator: " ")
+    }
+
+    private var recommendedAction: String {
+        switch outcome {
+        case .verified:
+            return "Use this backend-verified LiDAR result for review and reporting."
+        case .reviewOnly:
+            return "Review this LiDAR result before treating it as final."
+        case .blocked:
+            return qualityBlockers.isEmpty
+                ? "Retake the capture before reporting this stockpile."
+                : "Retake the capture before reporting: \(qualityBlockers.joined(separator: ", "))."
+        }
+    }
+
+    private func reconstructionPayload(
+        volumeM3: Double?,
+        outcome: StockpileRunOutcome
+    ) -> StockpileReconstructionPayload? {
+        guard let volumeM3, volumeM3 > 0 else {
+            return nil
+        }
+
+        let footprintArea = max(volume?.footprintAreaM2 ?? volumeM3 * 2.1, 1.0)
+        let peakHeight = estimatedPeakHeight(volumeM3: volumeM3, footprintAreaM2: footprintArea)
+        let defaultMode: String = switch outcome {
+        case .verified:
+            "3d"
+        case .reviewOnly, .blocked:
+            "surface"
+        }
+        let sourceFrames = diagnostics?.fusedFrameCount ?? diagnostics?.frameCount ?? 0
+        let sourcePoints = diagnostics?.pilePointCount ?? diagnostics?.fusedPointCount ?? volume?.numPoints ?? 0
+        let summary = [
+            "Estimated 3D shape preview from \(sourceFrames) backend LiDAR frames.",
+            sourcePoints > 0 ? "\(sourcePoints) backend pile points supported the measurement." : nil,
+            "The preview mesh is simplified; use the quality status and diagnostics before reporting."
+        ]
+        .compactMap { $0 }
+        .joined(separator: " ")
+
+        return Self.syntheticReconstruction(
+            summary: summary,
+            footprintAreaM2: footprintArea,
+            peakHeightM: peakHeight,
+            defaultMode: defaultMode,
+            outcome: outcome,
+            warnings: qualityWarnings,
+            blockers: qualityBlockers
+        )
+    }
+
+    private func estimatedPeakHeight(
+        volumeM3: Double,
+        footprintAreaM2: Double
+    ) -> Double {
+        guard footprintAreaM2 > 0 else {
+            return max(0.6, min(volumeM3, 12.0))
+        }
+
+        // A stockpile is closer to a rounded cone than a rectangular prism, so
+        // use 3V/A as the first-order height estimate and clamp to field-safe
+        // display bounds. This is preview geometry; measured volume remains the
+        // backend value above it.
+        return max(0.35, min((3.0 * volumeM3) / footprintAreaM2, 12.0))
+    }
+
+    private static func syntheticReconstruction(
+        summary: String,
+        footprintAreaM2: Double,
+        peakHeightM: Double,
+        defaultMode: String,
+        outcome: StockpileRunOutcome,
+        warnings: [String],
+        blockers: [String]
+    ) -> StockpileReconstructionPayload {
+        let gridSize = 19
+        let aspect: Float = 1.28
+        let area = Float(max(footprintAreaM2, 1.0))
+        let radiusY = sqrt(area / (.pi * aspect))
+        let radiusX = radiusY * aspect
+        let peak = Float(max(peakHeightM, 0.35))
+        let riskIsVisible = warnings.isEmpty == false || blockers.isEmpty == false
+
+        var vertices: [StockpileReconstructionPointPayload] = []
+        var pointCloud: [StockpileReconstructionPointPayload] = []
+        var toeMarkers: [StockpileReconstructionPointPayload] = []
+        var surfaceRiskMarkers: [StockpileReconstructionPointPayload] = []
+
+        for row in 0..<gridSize {
+            for column in 0..<gridSize {
+                let u = (Float(column) / Float(gridSize - 1)) * 2 - 1
+                let v = (Float(row) / Float(gridSize - 1)) * 2 - 1
+                let x = u * radiusX
+                let y = v * radiusY
+                let radial = sqrt(u * u + v * v)
+                let ridge = max(0, 1 - pow(radial, 1.85))
+                let shoulder = 0.08 * sin(x * 0.65) + 0.06 * cos(y * 0.45)
+                var z = max(0, peak * ridge + shoulder)
+
+                if riskIsVisible, x > radiusX * 0.18, y < -radiusY * 0.12, radial < 0.72 {
+                    z += blockers.isEmpty ? peak * 0.10 : peak * 0.18
+                }
+
+                let point = StockpileReconstructionPointPayload(x: x, y: y, z: z)
+                vertices.append(point)
+
+                if row.isMultiple(of: 2), column.isMultiple(of: 2), z > 0.03 {
+                    pointCloud.append(point)
+                }
+
+                if radial > 0.82, radial < 1.12, (row + column).isMultiple(of: 3) {
+                    toeMarkers.append(
+                        StockpileReconstructionPointPayload(
+                            x: x,
+                            y: y,
+                            z: max(0.04, z * 0.18)
+                        )
+                    )
+                }
+
+                if riskIsVisible,
+                   x > radiusX * 0.10,
+                   y < -radiusY * 0.10,
+                   radial < 0.78,
+                   (row + column).isMultiple(of: blockers.isEmpty ? 6 : 4) {
+                    surfaceRiskMarkers.append(
+                        StockpileReconstructionPointPayload(
+                            x: x,
+                            y: y,
+                            z: z + (blockers.isEmpty ? peak * 0.05 : peak * 0.08)
+                        )
+                    )
+                }
+            }
+        }
+
+        var triangles: [StockpileReconstructionTrianglePayload] = []
+        for row in 0..<(gridSize - 1) {
+            for column in 0..<(gridSize - 1) {
+                let topLeft = UInt32(row * gridSize + column)
+                let topRight = UInt32(row * gridSize + column + 1)
+                let bottomLeft = UInt32((row + 1) * gridSize + column)
+                let bottomRight = UInt32((row + 1) * gridSize + column + 1)
+                triangles.append(StockpileReconstructionTrianglePayload(a: topLeft, b: bottomLeft, c: topRight))
+                triangles.append(StockpileReconstructionTrianglePayload(a: topRight, b: bottomLeft, c: bottomRight))
+            }
+        }
+
+        return StockpileReconstructionPayload(
+            summary: summary,
+            footprintAreaM2: footprintAreaM2,
+            peakHeightM: peakHeightM,
+            defaultMode: defaultMode,
+            vertices: vertices,
+            triangles: triangles,
+            pointCloud: pointCloud,
+            toeMarkers: toeMarkers,
+            surfaceRiskMarkers: surfaceRiskMarkers
+        )
+    }
+
+    private static func confidenceScore(
+        outcome: StockpileRunOutcome,
+        warnings: [String],
+        blockers: [String]
+    ) -> Int {
+        switch outcome {
+        case .verified:
+            return warnings.isEmpty ? 94 : 84
+        case .reviewOnly:
+            return 72
+        case .blocked:
+            return blockers.isEmpty ? 45 : 30
+        }
+    }
+
+    private static func derivedDensityKgPerM3(
+        volumeM3: Double?,
+        weightKg: Double?,
+        fallback: Int
+    ) -> Int {
+        guard let volumeM3, let weightKg, volumeM3 > 0, weightKg > 0 else {
+            return fallback
+        }
+        return max(Int((weightKg / volumeM3).rounded()), 0)
+    }
+
+    private static func measurement(
+        volumeM3: Double?,
+        weightKg: Double?,
+        densityKgPerM3: Int
+    ) -> StockpileMeasurementPayload? {
+        guard let volumeM3, let weightKg, volumeM3 > 0 else {
+            return nil
+        }
+        return StockpileMeasurementPayload(
+            volumeM3: volumeM3,
+            weightTonnes: weightKg / 1_000.0,
+            densityKgPerM3: densityKgPerM3
+        )
     }
 }
 
@@ -506,7 +988,11 @@ final class CaptureFeatureStore: ObservableObject {
     private var pipelineTask: Task<Void, Never>?
     private var cameraMonitoringTask: Task<Void, Never>?
     private var markerlessSubmissionTask: Task<Void, Never>?
+    private var markerlessResultTask: Task<Void, Never>?
+    private var markerlessBundleFinalizationTask: Task<Void, Never>?
     private var lastSubmittedMarkerlessArchiveURL: URL?
+    private var activeMarkerlessBundleCaptureID: String?
+    private var sealedMarkerlessQuickEstimate: CaptureFeatureLocalQuickEstimate?
     private var selectedMovieStorage: CaptureSelectedMovieStorage?
     private var ownedSelectedMovieURLs: Set<URL> = []
     private var activeUploadFileURL: URL?
@@ -545,6 +1031,8 @@ final class CaptureFeatureStore: ObservableObject {
         pipelineTask?.cancel()
         cameraMonitoringTask?.cancel()
         markerlessSubmissionTask?.cancel()
+        markerlessResultTask?.cancel()
+        markerlessBundleFinalizationTask?.cancel()
         let retainedURLs = Set([activeUploadFileURL].compactMap { $0 })
         let removableURLs = ownedSelectedMovieURLs.filter { retainedURLs.contains($0) == false }
         Self.removeOwnedFiles(removableURLs)
@@ -650,6 +1138,10 @@ final class CaptureFeatureStore: ObservableObject {
                         : "Camera access required"
                 }
 
+                if isMarkerlessCaptureEnabled, markerlessCaptureQualityEvidence().isProductionReady == false {
+                    return "Keep recording"
+                }
+
                 switch state.operatorStage {
                 case .failed:
                     return "Restart recording"
@@ -694,6 +1186,10 @@ final class CaptureFeatureStore: ObservableObject {
                     return cameraState.permission.operatorHint
                 }
 
+                if isMarkerlessCaptureEnabled, markerlessCaptureQualityEvidence().isProductionReady == false {
+                    return markerlessCaptureQualityEvidence().operatorAction
+                }
+
                 return cameraState.operatorStageDetail
             }
             if configuration.guidedCapture.isReadyToFinish {
@@ -724,6 +1220,63 @@ final class CaptureFeatureStore: ObservableObject {
     var isMarkerlessCaptureEnabled: Bool {
         configuration.pipeline.markerlessCaptureEnabled
     }
+
+    var materialOptions: [CaptureMaterialOption] {
+        CaptureMaterialOption.clientSafeOptions
+    }
+
+    var selectedMaterialOption: CaptureMaterialOption {
+        materialOptions.first {
+            $0.materialCode == configuration.pipeline.materialCode
+        } ?? CaptureMaterialOption(
+            displayName: configuration.home.materialName,
+            materialCode: configuration.pipeline.materialCode,
+            densityKgPerM3: configuration.pipeline.densityKgPerM3
+        )
+    }
+
+    var pileSizeOptions: [CapturePileSizeMode] {
+        CapturePileSizeMode.allCases
+    }
+
+    var selectedPileSizeMode: CapturePileSizeMode {
+        configuration.pipeline.pileSizeMode
+    }
+
+    func selectMaterial(_ option: CaptureMaterialOption) {
+        guard phase == .idle || phase == .guidedCapture else {
+            return
+        }
+        configuration.pipeline.materialCode = option.materialCode
+        configuration.pipeline.densityKgPerM3 = option.densityKgPerM3
+        configuration.home = CaptureHomeContent(
+            siteName: configuration.home.siteName,
+            pileName: configuration.home.pileName,
+            materialName: option.displayName,
+            readinessHeadline: configuration.home.readinessHeadline,
+            readinessSummary: configuration.home.readinessSummary,
+            primaryActionTitle: configuration.home.primaryActionTitle,
+            quickTips: configuration.home.quickTips,
+            recentRuns: configuration.home.recentRuns
+        )
+    }
+
+    func selectPileSizeMode(_ mode: CapturePileSizeMode) {
+        guard phase == .idle || phase == .guidedCapture else {
+            return
+        }
+        configuration.pipeline.pileSizeMode = mode
+    }
+
+    #if canImport(ARKit)
+    /// The underlying ARSession from the LiDAR capture runtime, available when
+    /// markerless capture is enabled. Used by the live mesh overlay view.
+    var markerlessARSession: ARSession? {
+        guard isMarkerlessCaptureEnabled else { return nil }
+        poseObservationController.prepareRuntimeIfNeeded()
+        return poseObservationController.underlyingARSession
+    }
+    #endif
 
     var livePreviewSource: (any CaptureFeatureLivePreviewSessionBridging)? {
         cameraSession as? any CaptureFeatureLivePreviewSessionBridging
@@ -804,6 +1357,10 @@ final class CaptureFeatureStore: ObservableObject {
         pipelineTask = nil
         markerlessSubmissionTask?.cancel()
         markerlessSubmissionTask = nil
+        markerlessResultTask?.cancel()
+        markerlessResultTask = nil
+        markerlessBundleFinalizationTask?.cancel()
+        markerlessBundleFinalizationTask = nil
         activeUploadFileURL = nil
         activeUploadSource = nil
         pendingRunRecoveryState = nil
@@ -814,6 +1371,8 @@ final class CaptureFeatureStore: ObservableObject {
         markerlessSubmissionState = .idle
         lastMarkerlessSubmissionReceipt = nil
         lastSubmittedMarkerlessArchiveURL = nil
+        activeMarkerlessBundleCaptureID = nil
+        sealedMarkerlessQuickEstimate = nil
         poseObservationController.reset()
         cameraSession?.reset()
         if let coordinator = markerlessSubmissionCoordinator {
@@ -962,6 +1521,10 @@ final class CaptureFeatureStore: ObservableObject {
             // No coordinator means the host hasn't opted into v2 markerless.
             // Surface a clear failed state so the operator sees something
             // instead of a silent drop.
+            CaptureFeatureTrace.log(
+                "store.markerlessSubmit.noCoordinator",
+                details: "captureID=\(captureID)"
+            )
             markerlessSubmissionState = .failed(
                 captureID: captureID,
                 message: "Markerless submission is not configured for this build."
@@ -975,6 +1538,12 @@ final class CaptureFeatureStore: ObservableObject {
         markerlessSubmissionTask?.cancel()
         lastSubmittedMarkerlessArchiveURL = archiveURL
         markerlessSubmissionState = .submitting(captureID: captureID)
+        configuration.uploading = UploadProgressContent(
+            transferState: .uploading(progress: nil),
+            processingState: .idle,
+            statusTone: .neutral,
+            primaryMessage: "Uploading the sealed LiDAR capture bundle to the server."
+        )
         // Mirror v1's UX: while the bundle is uploading, treat the run as
         // "upload in progress" so the existing action bar copy applies.
         if phase == .guidedCapture || phase == .idle {
@@ -985,7 +1554,13 @@ final class CaptureFeatureStore: ObservableObject {
             archiveURL: archiveURL,
             captureID: captureID,
             siteID: configuration.pipeline.siteID,
-            materialCode: configuration.pipeline.materialCode
+            materialCode: configuration.pipeline.materialCode,
+            densityKgPerM3: configuration.pipeline.densityKgPerM3,
+            pileSizeMode: configuration.pipeline.pileSizeMode.rawValue
+        )
+        CaptureFeatureTrace.log(
+            "store.markerlessSubmit.start",
+            details: "captureID=\(captureID) url=\(archiveURL.lastPathComponent) material=\(request.materialCode) density=\(request.densityKgPerM3) pileSize=\(request.pileSizeMode ?? "unset")"
         )
 
         // The store is @MainActor, so the spawned task inherits main-actor
@@ -996,12 +1571,24 @@ final class CaptureFeatureStore: ObservableObject {
             do {
                 let receipt = try await coordinator.submit(request)
                 guard Task.isCancelled == false else { return }
+                CaptureFeatureTrace.log(
+                    "store.markerlessSubmit.success",
+                    details: "captureID=\(receipt.captureID) jobID=\(receipt.jobID) resultID=\(receipt.resultID ?? "nil") status=\(receipt.status)"
+                )
                 self.applyMarkerlessSubmissionSuccess(receipt: receipt)
             } catch is CancellationError {
                 // Cancelled while another submission started; nothing to do.
+                CaptureFeatureTrace.log(
+                    "store.markerlessSubmit.cancelled",
+                    details: "captureID=\(request.captureID)"
+                )
                 return
             } catch {
                 guard Task.isCancelled == false else { return }
+                CaptureFeatureTrace.log(
+                    "store.markerlessSubmit.failure",
+                    details: "captureID=\(request.captureID) error=\(error.localizedDescription)"
+                )
                 self.applyMarkerlessSubmissionFailure(
                     captureID: request.captureID,
                     error: error
@@ -1031,11 +1618,239 @@ final class CaptureFeatureStore: ObservableObject {
     ) {
         markerlessSubmissionState = .submitted(receipt: receipt)
         lastMarkerlessSubmissionReceipt = receipt
-        // Mirror the v1 phase progression: a confirmed receipt means the
-        // backend now owns the run. v2 result polling will land in a
-        // follow-up slice; surfacing `.processing` keeps the existing UI
-        // copy ("Building result") accurate in the meantime.
+        configuration.uploading = UploadProgressContent(
+            transferState: .complete,
+            processingState: .idle,
+            statusTone: .success,
+            primaryMessage: "The LiDAR capture bundle is safely on the server."
+        )
         phase = .processing
+        CaptureFeatureTrace.log(
+            "store.markerlessSubmit.receiptApplied",
+            details: "captureID=\(receipt.captureID) jobID=\(receipt.jobID) resultID=\(receipt.resultID ?? "nil")"
+        )
+        fetchCompletedMarkerlessResultIfAvailable(receipt: receipt)
+    }
+
+    private func fetchCompletedMarkerlessResultIfAvailable(
+        receipt: StockpileCaptureBundleSubmissionReceipt
+    ) {
+        markerlessResultTask?.cancel()
+        markerlessResultTask = Task { [weak self] in
+            guard let self else { return }
+            do {
+                let trimmedResultID = receipt.resultID?.trimmingCharacters(in: .whitespacesAndNewlines)
+                let resultID: String
+                if let trimmedResultID, trimmedResultID.isEmpty == false {
+                    resultID = trimmedResultID
+                    CaptureFeatureTrace.log(
+                        "store.markerlessResult.usingReceiptResultID",
+                        details: "captureID=\(receipt.captureID) resultID=\(resultID)"
+                    )
+                } else {
+                    CaptureFeatureTrace.log(
+                        "store.markerlessResult.pollJobStart",
+                        details: "captureID=\(receipt.captureID) jobID=\(receipt.jobID)"
+                    )
+                    resultID = try await self.pollMarkerlessV2JobForResult(jobID: receipt.jobID)
+                }
+                let result = try await self.fetchMarkerlessV2Result(resultID: resultID)
+                guard Task.isCancelled == false else { return }
+                self.applyCompletedMarkerlessV2Result(result, receipt: receipt)
+            } catch {
+                guard Task.isCancelled == false else { return }
+                CaptureFeatureTrace.log(
+                    "store.markerlessResult.failure",
+                    details: "captureID=\(receipt.captureID) jobID=\(receipt.jobID) error=\(error.localizedDescription)"
+                )
+                self.applyMarkerlessSubmissionFailure(
+                    captureID: receipt.captureID,
+                    error: error
+                )
+            }
+        }
+    }
+
+    private func pollMarkerlessV2JobForResult(
+        jobID: String
+    ) async throws -> String {
+        var lastStatus = "unknown"
+        for attempt in 1...30 {
+            let job = try await fetchMarkerlessV2Job(jobID: jobID)
+            lastStatus = job.status
+            CaptureFeatureTrace.log(
+                "store.markerlessJob.poll",
+                details: "jobID=\(jobID) attempt=\(attempt) status=\(job.status) resultID=\(job.resultID ?? "nil")"
+            )
+            if let resultID = job.resultID?.trimmingCharacters(in: .whitespacesAndNewlines),
+               resultID.isEmpty == false {
+                return resultID
+            }
+            if job.status.lowercased() == "completed" {
+                throw StockpileMarkerlessV2ResultError.missingResultID(jobID: jobID)
+            }
+            if job.status.lowercased() == "failed" {
+                throw StockpileMarkerlessV2ResultError.jobDidNotComplete(jobID: jobID, status: job.status)
+            }
+            try await Task.sleep(nanoseconds: 2_000_000_000)
+        }
+        throw StockpileMarkerlessV2ResultError.jobDidNotComplete(jobID: jobID, status: lastStatus)
+    }
+
+    private func fetchMarkerlessV2Job(
+        jobID: String
+    ) async throws -> StockpileMarkerlessV2JobPayload {
+        let appConfiguration = StockpileAppConfiguration.current()
+        let url = markerlessV2JobURL(
+            jobID: jobID,
+            captureBundleSubmissionURL: appConfiguration.markerlessSubmission.captureBundleSubmissionURL
+        )
+        CaptureFeatureTrace.log(
+            "store.markerlessJob.request",
+            details: "jobID=\(jobID) url=\(url.absoluteString)"
+        )
+        var request = URLRequest(
+            url: url,
+            cachePolicy: .reloadIgnoringLocalCacheData,
+            timeoutInterval: appConfiguration.markerlessSubmission.timeoutInterval
+        )
+        request.httpMethod = "GET"
+        applyMarkerlessAuthHeaders(to: &request, appConfiguration: appConfiguration)
+
+        let (data, response) = try await URLSession.shared.data(for: request)
+        guard let http = response as? HTTPURLResponse else {
+            throw StockpileMarkerlessV2ResultError.nonHTTPResponse
+        }
+        guard (200..<300).contains(http.statusCode) else {
+            let body = String(data: data, encoding: .utf8) ?? ""
+            throw StockpileMarkerlessV2ResultError.httpError(statusCode: http.statusCode, body: body)
+        }
+
+        do {
+            return try JSONDecoder().decode(StockpileMarkerlessV2JobPayload.self, from: data)
+        } catch {
+            throw StockpileMarkerlessV2ResultError.decodeFailed("\(error)")
+        }
+    }
+
+    private func fetchMarkerlessV2Result(
+        resultID: String
+    ) async throws -> StockpileMarkerlessV2ResultPayload {
+        let appConfiguration = StockpileAppConfiguration.current()
+        let url = markerlessV2ResultURL(
+            resultID: resultID,
+            captureBundleSubmissionURL: appConfiguration.markerlessSubmission.captureBundleSubmissionURL
+        )
+        CaptureFeatureTrace.log(
+            "store.markerlessResult.request",
+            details: "resultID=\(resultID) url=\(url.absoluteString)"
+        )
+        var request = URLRequest(
+            url: url,
+            cachePolicy: .reloadIgnoringLocalCacheData,
+            timeoutInterval: appConfiguration.markerlessSubmission.timeoutInterval
+        )
+        request.httpMethod = "GET"
+        applyMarkerlessAuthHeaders(to: &request, appConfiguration: appConfiguration)
+
+        let (data, response) = try await URLSession.shared.data(for: request)
+        guard let http = response as? HTTPURLResponse else {
+            throw StockpileMarkerlessV2ResultError.nonHTTPResponse
+        }
+        guard (200..<300).contains(http.statusCode) else {
+            let body = String(data: data, encoding: .utf8) ?? ""
+            throw StockpileMarkerlessV2ResultError.httpError(statusCode: http.statusCode, body: body)
+        }
+
+        do {
+            let result = try JSONDecoder().decode(StockpileMarkerlessV2ResultPayload.self, from: data)
+            CaptureFeatureTrace.log(
+                "store.markerlessResult.decoded",
+                details: "resultID=\(result.resultID) stage=\(result.stage ?? "nil") publishable=\(result.publishable) volume=\(result.volume?.recommendedM3 ?? 0)"
+            )
+            return result
+        } catch {
+            throw StockpileMarkerlessV2ResultError.decodeFailed("\(error)")
+        }
+    }
+
+    private func applyMarkerlessAuthHeaders(
+        to request: inout URLRequest,
+        appConfiguration: StockpileAppConfiguration
+    ) {
+        if let bearerToken = appConfiguration.api.bearerToken?.trimmingCharacters(in: .whitespacesAndNewlines),
+           bearerToken.isEmpty == false {
+            request.setValue("Bearer \(bearerToken)", forHTTPHeaderField: "Authorization")
+        }
+        if let headerName = appConfiguration.api.authHeaderName?.trimmingCharacters(in: .whitespacesAndNewlines),
+           headerName.isEmpty == false,
+           let headerValue = appConfiguration.api.authHeaderValue {
+            request.setValue(headerValue, forHTTPHeaderField: headerName)
+        }
+    }
+
+    private func markerlessV2ResultURL(
+        resultID: String,
+        captureBundleSubmissionURL: URL
+    ) -> URL {
+        var components = URLComponents(url: captureBundleSubmissionURL, resolvingAgainstBaseURL: false)
+        components?.path = "/api/v2/results/\(resultID)"
+        components?.query = nil
+        components?.fragment = nil
+        return components?.url ?? captureBundleSubmissionURL
+            .deletingLastPathComponent()
+            .appending(path: "results")
+            .appending(path: resultID)
+    }
+
+    private func markerlessV2JobURL(
+        jobID: String,
+        captureBundleSubmissionURL: URL
+    ) -> URL {
+        var components = URLComponents(url: captureBundleSubmissionURL, resolvingAgainstBaseURL: false)
+        components?.path = "/api/v2/jobs/\(jobID)"
+        components?.query = nil
+        components?.fragment = nil
+        return components?.url ?? captureBundleSubmissionURL
+            .deletingLastPathComponent()
+            .appending(path: "jobs")
+            .appending(path: jobID)
+    }
+
+    private func applyCompletedMarkerlessV2Result(
+        _ result: StockpileMarkerlessV2ResultPayload,
+        receipt: StockpileCaptureBundleSubmissionReceipt
+    ) {
+        let payload = result.mobileResultPayload(
+            fallbackPileName: configuration.home.pileName,
+            fallbackDensityKgPerM3: configuration.pipeline.densityKgPerM3,
+            jobID: receipt.jobID
+        )
+        let model = StockpileResultModelFactory.makeResultScreenModel(from: payload)
+
+        configuration.processing = UploadProgressContent(
+            transferState: .complete,
+            processingState: result.outcome == .blocked ? .blocked : .reviewReady,
+            statusTone: result.outcome == .blocked ? .warning : .success,
+            primaryMessage: payload.recommendedAction,
+            recaptureGuidance: nil
+        )
+
+        switch payload.outcome {
+        case .verified:
+            configuration.verifiedResult = model
+            phase = .verifiedResult
+        case .reviewOnly:
+            configuration.reviewOnlyResult = model
+            phase = .reviewOnlyResult
+        case .blocked:
+            configuration.blockedResult = model
+            phase = .blockedResult
+        }
+        CaptureFeatureTrace.log(
+            "store.markerlessResult.applied",
+            details: "captureID=\(receipt.captureID) resultID=\(result.resultID) outcome=\(payload.outcome)"
+        )
     }
 
     private func applyMarkerlessSubmissionFailure(
@@ -1047,6 +1862,10 @@ final class CaptureFeatureStore: ObservableObject {
         markerlessSubmissionState = .failed(
             captureID: captureID,
             message: message
+        )
+        CaptureFeatureTrace.log(
+            "store.markerlessSubmit.visibleFailure",
+            details: "captureID=\(captureID) message=\(message)"
         )
         // Push the visible feature phase to the existing blocked-result
         // surface so operators see a clearly recoverable error and can
@@ -1153,10 +1972,24 @@ final class CaptureFeatureStore: ObservableObject {
             return
         }
 
+        if isMarkerlessCaptureEnabled, markerlessWalkProgressCanSeal {
+            CaptureFeatureTrace.log(
+                "store.advanceCapture.finishMarkerlessFromPoseCoverage",
+                state: cameraState,
+                details: "poseCoverage=\(markerlessPoseWalkCoverageScore())"
+            )
+            finishMarkerlessBundleAndSubmit()
+            return
+        }
+
         if cameraState.canFinish {
             CaptureFeatureTrace.log("store.advanceCapture.finish", state: cameraState)
             cameraSession.finishGuidedCapture()
             syncGuidedCaptureState(from: cameraSession.state)
+            if isMarkerlessCaptureEnabled {
+                finishMarkerlessBundleAndSubmit()
+                return
+            }
             beginUploadAndProcessing()
             return
         }
@@ -1439,24 +2272,345 @@ final class CaptureFeatureStore: ObservableObject {
             for: .liveRecorded,
             guidanceMetric: state.guidance.referenceVisibility
         )
+        let markerlessQualityEvidence = markerlessCaptureQualityEvidence()
+        let perimeterCoverage = isMarkerlessCaptureEnabled
+            ? markerlessQualityEvidence.displayProgressScore
+            : state.guidance.coverage.score
+        let coverageMetric = isMarkerlessCaptureEnabled
+            ? markerlessPoseCoverageMetric(
+                from: state.guidance.coverage,
+                evidence: markerlessQualityEvidence
+            )
+            : state.guidance.coverage
         configuration.guidedCapture = GuidedCaptureContent(
             pileName: configuration.home.pileName,
             sessionLabel: state.statusLabel,
-            referencesVisible: referenceContext.maxVisibleTogether > 0
+            referencesVisible: isMarkerlessCaptureEnabled
+                ? max(configuration.pipeline.referenceCountGoal, 2)
+                : (referenceContext.maxVisibleTogether > 0
                 ? referenceContext.maxVisibleTogether
-                : visibleReferenceCount(from: state.guidance.referenceVisibility),
+                : visibleReferenceCount(from: state.guidance.referenceVisibility)),
             referenceTarget: max(configuration.pipeline.referenceCountGoal, 1),
-            perimeterCoverage: state.guidance.coverage.score,
+            perimeterCoverage: perimeterCoverage,
             stabilityScore: state.guidance.motion.score,
-            activePrompt: state.activePrompt,
+            activePrompt: isMarkerlessCaptureEnabled
+                ? markerlessQualityEvidence.operatorAction
+                : state.activePrompt,
             captureChecks: [
                 state.guidance.sceneFit.map(makeGuidedCaptureCheck),
                 makeGuidedCaptureCheck(from: state.guidance.referenceVisibility),
-                makeGuidedCaptureCheck(from: state.guidance.coverage),
+                makeGuidedCaptureCheck(from: coverageMetric),
                 makeGuidedCaptureCheck(from: state.guidance.motion),
             ]
             .compactMap { $0 }
         )
+    }
+
+    private func markerlessPoseCoverageMetric(
+        from metric: StockpileCaptureGuidanceMetric,
+        evidence: MarkerlessCaptureQualityEvidence
+    ) -> StockpileCaptureGuidanceMetric {
+        return StockpileCaptureGuidanceMetric(
+            title: "LiDAR surface coverage",
+            score: evidence.overallScore,
+            watchThreshold: 0.86,
+            blockedThreshold: 0.55,
+            detail: evidence.operatorAction,
+            observedCount: nil,
+            targetCount: nil
+        )
+    }
+
+    private var markerlessWalkProgressCanSeal: Bool {
+        guard isMarkerlessCaptureEnabled else {
+            return false
+        }
+
+        return markerlessCaptureQualityEvidence().isProductionReady
+            && configuration.guidedCapture.captureChecks.contains { $0.status == .blocked } == false
+    }
+
+    private func markerlessPoseWalkCoverageScore() -> Double {
+        markerlessCaptureQualityEvidence().displayProgressScore
+    }
+
+    private func markerlessCaptureQualityEvidence() -> MarkerlessCaptureQualityEvidence {
+        let samples = poseObservationController.bufferedSamples
+        guard isMarkerlessCaptureEnabled, samples.count >= 2 else {
+            return MarkerlessCaptureQualityEvidence(
+                displayProgressScore: 0,
+                overallScore: 0,
+                pathScore: 0,
+                durationScore: 0,
+                lidarSupportScore: 0,
+                durationSec: 0,
+                pathDistanceM: 0,
+                lateralSpreadM: 0,
+                quickEstimate: poseObservationController.latestQuickEstimate,
+                isProductionReady: false,
+                operatorAction: "Start walking slowly around the pile."
+            )
+        }
+
+        let durationSec = max(samples.last?.timeOffsetSec ?? 0, 0)
+        let pathDistanceM = markerlessPathDistance(samples)
+        let lateralSpreadM = markerlessLateralSpread(samples)
+        let pathScore = markerlessPathCoverageScore(
+            pathDistanceM: pathDistanceM,
+            lateralSpreadM: lateralSpreadM
+        )
+        let durationScore = min(max(durationSec / 35.0, 0), 1)
+        let quickEstimate = poseObservationController.latestQuickEstimate
+        let lidarSupportScore = markerlessLiDARSupportScore(from: quickEstimate)
+        let estimateIsStrong = markerlessQuickEstimateIsStrong(quickEstimate)
+        let pileScale = markerlessPileScale(from: quickEstimate)
+        let operatorMovedEnoughForStrongEstimate =
+            durationSec >= pileScale.minimumConfirmationDurationSec
+            && pathDistanceM >= pileScale.minimumPathDistanceM
+            && lateralSpreadM >= pileScale.minimumLateralSpreadM
+        let operatorHeldStrongEstimateLongEnough =
+            durationSec >= pileScale.minimumHoldSealDurationSec
+            && estimateIsStrong
+        let operatorCompletedWalkaround =
+            durationSec >= pileScale.minimumWalkaroundDurationSec
+            && pathDistanceM >= pileScale.minimumWalkaroundPathM
+            && lateralSpreadM >= pileScale.minimumWalkaroundSpreadM
+        let isProductionReady =
+            estimateIsStrong
+            && (
+                operatorMovedEnoughForStrongEstimate
+                || operatorHeldStrongEstimateLongEnough
+                || operatorCompletedWalkaround
+            )
+        let adaptivePathScore = estimateIsStrong
+            ? max(pathScore, min(pathDistanceM / 2.5, 1), min(lateralSpreadM / 0.8, 1))
+            : pathScore
+        let overallScore = isProductionReady ? 1 : min(adaptivePathScore, durationScore, lidarSupportScore)
+
+        return MarkerlessCaptureQualityEvidence(
+            displayProgressScore: markerlessDisplayProgressScore(
+                pathScore: pathScore,
+                lidarSupportScore: lidarSupportScore,
+                pathDistanceM: pathDistanceM,
+                lateralSpreadM: lateralSpreadM,
+                quickEstimate: quickEstimate,
+                durationSec: durationSec,
+                pileScale: pileScale,
+                hasDepthSamples: samples.contains(where: \.depthDataIncluded),
+                isProductionReady: isProductionReady
+            ),
+            overallScore: overallScore,
+            pathScore: pathScore,
+            durationScore: durationScore,
+            lidarSupportScore: lidarSupportScore,
+            durationSec: durationSec,
+            pathDistanceM: pathDistanceM,
+            lateralSpreadM: lateralSpreadM,
+            quickEstimate: quickEstimate,
+            isProductionReady: isProductionReady,
+            operatorAction: markerlessQualityOperatorAction(
+                durationSec: durationSec,
+                pathDistanceM: pathDistanceM,
+                lateralSpreadM: lateralSpreadM,
+                quickEstimate: quickEstimate,
+                isProductionReady: isProductionReady
+            )
+        )
+    }
+
+    private func markerlessDisplayProgressScore(
+        pathScore: Double,
+        lidarSupportScore: Double,
+        pathDistanceM: Double,
+        lateralSpreadM: Double,
+        quickEstimate: CaptureFeatureLocalQuickEstimate?,
+        durationSec: TimeInterval,
+        pileScale: MarkerlessPileScale,
+        hasDepthSamples: Bool,
+        isProductionReady: Bool
+    ) -> Double {
+        if isProductionReady {
+            return 1
+        }
+
+        let estimateIsStrong = markerlessQuickEstimateIsStrong(quickEstimate)
+        if estimateIsStrong, durationSec >= pileScale.minimumHoldSealDurationSec {
+            return 0.96
+        }
+
+        if estimateIsStrong, pathDistanceM < 0.75 {
+            return 0.68
+        }
+
+        guard pathDistanceM >= 0.75 else {
+            return hasDepthSamples ? 0.04 : 0
+        }
+
+        let depthFloor = hasDepthSamples ? 0.08 : 0
+        let movementScore = min(pathScore, min(max(lateralSpreadM / 1.2, 0), 1))
+        guard quickEstimate != nil else {
+            let scanStartedScore = movementScore * 0.18 + depthFloor
+            return min(max(scanStartedScore, 0), 0.24)
+        }
+
+        if estimateIsStrong {
+            let confirmationMovementScore = min(
+                max(
+                    pathDistanceM / pileScale.minimumPathDistanceM,
+                    lateralSpreadM / pileScale.minimumLateralSpreadM
+                ),
+                1
+            )
+            return min(0.68 + confirmationMovementScore * 0.27, 0.95)
+        }
+
+        let visualLiDARProgress = max(lidarSupportScore, depthFloor)
+        let score = movementScore * 0.82
+            + visualLiDARProgress * 0.18
+        let lidarCappedScore = lidarSupportScore < 0.45 ? min(score, 0.58) : score
+        return min(max(lidarCappedScore, 0), 0.92)
+    }
+
+    private func markerlessPathDistance(_ samples: [CaptureFeatureBufferedPoseSample]) -> Double {
+        var pathDistanceM = 0.0
+        var previous = samples[0].positionM
+        for sample in samples.dropFirst() {
+            let current = sample.positionM
+            let dx = current.x - previous.x
+            let dz = current.z - previous.z
+            let stepDistance = sqrt(dx * dx + dz * dz)
+            if stepDistance >= 0.08 && stepDistance <= 0.9 {
+                pathDistanceM += stepDistance
+            }
+            previous = current
+        }
+        return pathDistanceM
+    }
+
+    private func markerlessLateralSpread(_ samples: [CaptureFeatureBufferedPoseSample]) -> Double {
+        let xs = samples.map(\.positionM.x)
+        let zs = samples.map(\.positionM.z)
+        guard let minX = xs.min(),
+              let maxX = xs.max(),
+              let minZ = zs.min(),
+              let maxZ = zs.max()
+        else {
+            return 0
+        }
+
+        let width = maxX - minX
+        let depth = maxZ - minZ
+        return sqrt(width * width + depth * depth)
+    }
+
+    private func markerlessPathCoverageScore(pathDistanceM: Double, lateralSpreadM: Double) -> Double {
+        let distanceScore = min(max(pathDistanceM / 14.0, 0), 1)
+        let spreadScore = min(max(lateralSpreadM / 2.2, 0), 1)
+        if lateralSpreadM < 0.8 {
+            return min(distanceScore, 0.45)
+        }
+
+        return min(distanceScore, max(spreadScore, 0.55))
+    }
+
+    private func markerlessLiDARSupportScore(from quickEstimate: CaptureFeatureLocalQuickEstimate?) -> Double {
+        guard let quickEstimate else {
+            return 0
+        }
+
+        let pointScore = min(Double(quickEstimate.geometryPointCount) / 2_500.0, 1)
+        let footprintScore = min(quickEstimate.footprintAreaM2 / 3.0, 1)
+        let confidenceScore = min(quickEstimate.confidenceScore / 0.72, 1)
+        return min(pointScore, footprintScore, confidenceScore)
+    }
+
+    private func markerlessQuickEstimateIsStrong(_ quickEstimate: CaptureFeatureLocalQuickEstimate?) -> Bool {
+        guard let quickEstimate else {
+            return false
+        }
+
+        return quickEstimate.confidenceScore >= 0.72
+            && quickEstimate.geometryPointCount >= 2_500
+            && quickEstimate.footprintAreaM2 >= 2.0
+            && quickEstimate.peakHeightM >= 0.15
+            && quickEstimate.peakHeightM <= 12.0
+    }
+
+    private func markerlessPileScale(from quickEstimate: CaptureFeatureLocalQuickEstimate?) -> MarkerlessPileScale {
+        guard let quickEstimate else {
+            return .medium
+        }
+
+        if quickEstimate.footprintAreaM2 <= 8, quickEstimate.volumeM3 <= 25 {
+            return .small
+        }
+
+        if quickEstimate.footprintAreaM2 >= 35 || quickEstimate.volumeM3 >= 120 || quickEstimate.peakHeightM >= 5 {
+            return .large
+        }
+
+        return .medium
+    }
+
+    private func markerlessQualityOperatorAction(
+        durationSec: TimeInterval,
+        pathDistanceM: Double,
+        lateralSpreadM: Double,
+        quickEstimate: CaptureFeatureLocalQuickEstimate?,
+        isProductionReady: Bool
+    ) -> String {
+        if isProductionReady {
+            return "LiDAR coverage is complete. Keep the full pile in frame and seal the capture."
+        }
+
+        guard let quickEstimate else {
+            return "Walk slowly around the pile until LiDAR finds the surface."
+        }
+
+        let pileScale = markerlessPileScale(from: quickEstimate)
+
+        if markerlessQuickEstimateIsStrong(quickEstimate),
+           durationSec >= pileScale.minimumConfirmationDurationSec {
+            switch pileScale {
+            case .small:
+                return "LiDAR sees this small pile. Hold steady, then seal this pass."
+            case .medium:
+                return "LiDAR sees the pile. Take two side steps so the app can seal this pass."
+            case .large:
+                return "LiDAR sees a large pile. Keep sweeping the face from a wider position."
+            }
+        }
+
+        if markerlessQuickEstimateIsStrong(quickEstimate),
+           pathDistanceM < 1.5 || lateralSpreadM < 0.35 {
+            return "LiDAR sees the pile. Take two side steps so the app can seal this pass."
+        }
+
+        if quickEstimate.peakHeightM > 12.0 {
+            return "Step back and rescan the pile face. LiDAR saw a height spike."
+        }
+
+        if durationSec < 20 {
+            return "Keep one slow lap going so LiDAR can build the full pile surface."
+        }
+
+        if lateralSpreadM < 1.2 || pathDistanceM < 8 {
+            return "Keep walking around the pile, not just panning from one spot."
+        }
+
+        if quickEstimate.geometryPointCount < 2_500 {
+            return "Hold wider and sweep the missing pile face until the mesh covers more surface."
+        }
+
+        if quickEstimate.footprintAreaM2 < 3.0 {
+            return "Step back so LiDAR can see the full toe boundary and pile footprint."
+        }
+
+        if quickEstimate.confidenceScore < 0.72 {
+            return "Make one steadier pass around the pile before sealing."
+        }
+
+        return "Keep scanning the missing side until surface coverage reaches the finish gate."
     }
 
     private func makeGuidedCaptureCheck(from metric: StockpileCaptureGuidanceMetric) -> GuidedCaptureCheck {
@@ -1720,6 +2874,8 @@ final class CaptureFeatureStore: ObservableObject {
             .flatMap { $0.stockpileNonEmptyTrimmed }
             ?? configuration.processing.primaryMessage
         let localQuickEstimate = pendingRunRecoveryState?.localQuickEstimate
+            ?? sealedMarkerlessQuickEstimate
+            ?? latestQuickVolumeEstimate
         let measurement = localQuickEstimate?.measurement(
             densityKgPerM3: configuration.pipeline.densityKgPerM3
         )
@@ -2008,14 +3164,24 @@ final class CaptureFeatureStore: ObservableObject {
             : visibleReferenceCount(from: guidance.referenceVisibility)
         let resolvedLocalQuickEstimate = localQuickEstimate ?? poseObservationController.latestQuickEstimate
         let resolvedOnDeviceVision = onDeviceVision ?? poseObservationController.latestOnDeviceVision
+        let markerlessEvidence = isMarkerlessCaptureEnabled
+            ? markerlessCaptureQualityEvidence()
+            : nil
+        let coverageScore = markerlessEvidence?.overallScore ?? guidance.coverage.score
+        let overallGuidanceScore = markerlessEvidence.map {
+            min(guidance.overallScore, $0.overallScore)
+        } ?? guidance.overallScore
+        let estimatedReferenceCount = isMarkerlessCaptureEnabled
+            ? max(configuration.pipeline.referenceCountGoal, 2)
+            : estimatedVisibleReferenceCount
 
         return StockpileCaptureQualityInputPayload(
             referenceVisibilityScore: guidance.referenceVisibility.score,
-            coverageScore: guidance.coverage.score,
+            coverageScore: coverageScore,
             motionStabilityScore: guidance.motion.score,
-            overallGuidanceScore: guidance.overallScore,
-            toeCoverageScore: guidance.coverage.score,
-            estimatedConcurrentReferenceCount: estimatedVisibleReferenceCount,
+            overallGuidanceScore: overallGuidanceScore,
+            toeCoverageScore: coverageScore,
+            estimatedConcurrentReferenceCount: estimatedReferenceCount,
             deviceSensors: StockpileDeviceSensorInputPayload(
                 motionSignalsIncluded: liveTelemetry?.motionSignalsIncluded ?? true,
                 gravityVectorIncluded: liveTelemetry?.gravityVectorIncluded ?? true,
@@ -2026,7 +3192,8 @@ final class CaptureFeatureStore: ObservableObject {
                 cameraState: cameraState,
                 liveTelemetry: liveTelemetry,
                 guidance: guidance,
-                estimatedVisibleReferenceCount: estimatedVisibleReferenceCount,
+                estimatedVisibleReferenceCount: estimatedReferenceCount,
+                coverageScoreOverride: coverageScore,
                 localQuickEstimate: resolvedLocalQuickEstimate,
                 onDeviceVision: resolvedOnDeviceVision
             )
@@ -2038,6 +3205,7 @@ final class CaptureFeatureStore: ObservableObject {
         liveTelemetry: StockpileCaptureSensorSnapshot?,
         guidance: StockpileCaptureGuidanceSummary,
         estimatedVisibleReferenceCount: Int?,
+        coverageScoreOverride: Double? = nil,
         localQuickEstimate: CaptureFeatureLocalQuickEstimate?,
         onDeviceVision: CaptureFeatureOnDeviceVisionSummary?
     ) -> StockpileMobileFirstCapturePayload {
@@ -2065,7 +3233,7 @@ final class CaptureFeatureStore: ObservableObject {
                 lidarAssistAvailable: liveTelemetry?.lidarAssistAvailable ?? configuration.pipeline.lidarAssistEnabled,
                 trackingState: liveTelemetry?.trackingState ?? cameraState?.sessionLifecycle.rawValue
             ),
-            toeCoverageScore: guidance.coverage.score,
+            toeCoverageScore: coverageScoreOverride ?? guidance.coverage.score,
             pileSegmentationScore: pileSegmentationScore,
             toeSegmentationScore: toeSegmentationScore,
             segmentationConfidenceScore: segmentationConfidence,
@@ -2814,6 +3982,12 @@ final class CaptureFeatureStore: ObservableObject {
             return
         }
 
+        if phase == .guidedCapture,
+           isMarkerlessCaptureEnabled,
+           let cameraState = liveCameraState {
+            syncGuidedCaptureState(from: cameraState)
+        }
+
         objectWillChange.send()
     }
 
@@ -2822,7 +3996,7 @@ final class CaptureFeatureStore: ObservableObject {
             return
         }
 
-        if liveCameraState?.recordingLifecycle.isActive == true {
+        if liveCameraState?.recordingLifecycle.isActive == true && isMarkerlessCaptureEnabled == false {
             CaptureFeatureTrace.log(
                 "store.poseObservation.skippedCameraOwnedByRecording",
                 state: liveCameraState,
@@ -2941,6 +4115,72 @@ final class CaptureFeatureStore: ObservableObject {
         syncGuidedCaptureState(from: cameraSession.state)
         CaptureFeatureTrace.log("store.prepareAndStart.afterStartGuidedCapture", state: cameraSession.state)
         startPoseObservationIfNeeded()
+        startMarkerlessBundleRecordingIfNeeded()
+    }
+
+    private func startMarkerlessBundleRecordingIfNeeded() {
+        #if canImport(StockpileMobileFirstCapture)
+        guard isMarkerlessCaptureEnabled, activeMarkerlessBundleCaptureID == nil else {
+            return
+        }
+        let captureID = "ios-\(UUID().uuidString)"
+        do {
+            try poseObservationController.startBundleRecording(
+                captureID: captureID,
+                siteID: configuration.pipeline.siteID,
+                materialCode: configuration.pipeline.materialCode,
+                densityKgPerM3: configuration.pipeline.densityKgPerM3,
+                pileSizeMode: configuration.pipeline.pileSizeMode.rawValue
+            )
+            activeMarkerlessBundleCaptureID = captureID
+        } catch {
+            applyFailure(message: error.localizedDescription)
+        }
+        #endif
+    }
+
+    private func finishMarkerlessBundleAndSubmit() {
+        #if canImport(StockpileMobileFirstCapture)
+        guard isMarkerlessCaptureEnabled else {
+            beginUploadAndProcessing()
+            return
+        }
+        CaptureFeatureTrace.log(
+            "store.markerlessFinalize.start",
+            state: cameraSession?.state,
+            details: "activeCaptureID=\(activeMarkerlessBundleCaptureID ?? "nil")"
+        )
+        phase = .uploadInProgress
+        configuration.uploading = UploadProgressContent(
+            transferState: .preparing,
+            processingState: .idle,
+            statusTone: .neutral,
+            primaryMessage: "Sealing the LiDAR capture bundle on device."
+        )
+        markerlessBundleFinalizationTask?.cancel()
+        sealedMarkerlessQuickEstimate = latestQuickVolumeEstimate
+        markerlessBundleFinalizationTask = Task { [weak self] in
+            guard let self else { return }
+            do {
+                let output = try await self.poseObservationController.stopBundleRecording()
+                self.activeMarkerlessBundleCaptureID = nil
+                CaptureFeatureTrace.log(
+                    "store.markerlessFinalize.success",
+                    details: "captureID=\(output.captureID) archive=\(output.archiveURL.lastPathComponent)"
+                )
+                self.submitMarkerlessBundle(output)
+            } catch {
+                self.activeMarkerlessBundleCaptureID = nil
+                CaptureFeatureTrace.log(
+                    "store.markerlessFinalize.failure",
+                    details: "error=\(error.localizedDescription)"
+                )
+                self.applyFailure(message: error.localizedDescription)
+            }
+        }
+        #else
+        beginUploadAndProcessing()
+        #endif
     }
 
     private func prepareAndStoreSelectedMovie(from fileURL: URL) async throws {
@@ -3317,6 +4557,103 @@ private struct CaptureFeatureBufferedPoseSample: Equatable, Sendable {
     let depthDataIncluded: Bool
 }
 
+private struct MarkerlessCaptureQualityEvidence: Equatable, Sendable {
+    let displayProgressScore: Double
+    let overallScore: Double
+    let pathScore: Double
+    let durationScore: Double
+    let lidarSupportScore: Double
+    let durationSec: TimeInterval
+    let pathDistanceM: Double
+    let lateralSpreadM: Double
+    let quickEstimate: CaptureFeatureLocalQuickEstimate?
+    let isProductionReady: Bool
+    let operatorAction: String
+}
+
+private enum MarkerlessPileScale: Equatable, Sendable {
+    case small
+    case medium
+    case large
+
+    var minimumConfirmationDurationSec: TimeInterval {
+        switch self {
+        case .small:
+            return 8
+        case .medium:
+            return 12
+        case .large:
+            return 18
+        }
+    }
+
+    var minimumHoldSealDurationSec: TimeInterval {
+        switch self {
+        case .small:
+            return 14
+        case .medium:
+            return 24
+        case .large:
+            return 38
+        }
+    }
+
+    var minimumPathDistanceM: Double {
+        switch self {
+        case .small:
+            return 0.6
+        case .medium:
+            return 1.5
+        case .large:
+            return 5
+        }
+    }
+
+    var minimumLateralSpreadM: Double {
+        switch self {
+        case .small:
+            return 0.15
+        case .medium:
+            return 0.35
+        case .large:
+            return 0.9
+        }
+    }
+
+    var minimumWalkaroundDurationSec: TimeInterval {
+        switch self {
+        case .small:
+            return 14
+        case .medium:
+            return 30
+        case .large:
+            return 50
+        }
+    }
+
+    var minimumWalkaroundPathM: Double {
+        switch self {
+        case .small:
+            return 1.2
+        case .medium:
+            return 8
+        case .large:
+            return 18
+        }
+    }
+
+    var minimumWalkaroundSpreadM: Double {
+        switch self {
+        case .small:
+            return 0.25
+        case .medium:
+            return 1.0
+        case .large:
+            return 2.0
+        }
+    }
+}
+
 private struct CaptureFeatureOnDeviceVisionSummary: Equatable, Sendable {
     let source: String
     let usesMachineLearning: Bool
@@ -3449,11 +4786,43 @@ private final class CaptureFeatureDevicePoseObservationController {
         state.bufferedSamples.isEmpty == false
     }
 
-    func start() {
-        guard runtime == nil else {
-            return
-        }
+    #if canImport(ARKit)
+    var underlyingARSession: ARSession? {
+        #if canImport(StockpileMobileFirstCapture)
+        (runtime as? CaptureFeatureModuleDevicePoseRuntime)?.underlyingARSession
+        #else
+        nil
+        #endif
+    }
+    #endif
 
+    func prepareRuntimeIfNeeded() {
+        _ = resolvedRuntime()
+    }
+
+    #if canImport(StockpileMobileFirstCapture)
+    func startBundleRecording(
+        captureID: String,
+        siteID: String?,
+        materialCode: String,
+        densityKgPerM3: Int,
+        pileSizeMode: String?
+    ) throws {
+        try resolvedRuntime().startBundleRecording(
+            captureID: captureID,
+            siteID: siteID,
+            materialCode: materialCode,
+            densityKgPerM3: densityKgPerM3,
+            pileSizeMode: pileSizeMode
+        )
+    }
+
+    func stopBundleRecording() async throws -> StockpileCaptureBundleRecordingOutput {
+        try await resolvedRuntime().stopBundleRecording()
+    }
+    #endif
+
+    func start() {
         lastAcceptedSequenceNumber = nil
         lastAcceptedTimeOffsetSec = nil
         firstAcceptedTimeOffsetSec = nil
@@ -3468,13 +4837,7 @@ private final class CaptureFeatureDevicePoseObservationController {
         )
         onStateUpdated?(state)
 
-        let runtime = runtimeFactory()
-        runtime.onSnapshotUpdated = { [weak self] snapshot in
-            Task { @MainActor [weak self] in
-                self?.handle(snapshot)
-            }
-        }
-        self.runtime = runtime
+        let runtime = resolvedRuntime()
 
         do {
             try runtime.start(configuration: runtimeConfiguration)
@@ -3498,6 +4861,21 @@ private final class CaptureFeatureDevicePoseObservationController {
             handle(failureSnapshot)
             self.runtime = nil
         }
+    }
+
+    private func resolvedRuntime() -> any CaptureFeatureDevicePoseRuntime {
+        if let runtime {
+            return runtime
+        }
+
+        let runtime = runtimeFactory()
+        runtime.onSnapshotUpdated = { [weak self] snapshot in
+            Task { @MainActor [weak self] in
+                self?.handle(snapshot)
+            }
+        }
+        self.runtime = runtime
+        return runtime
     }
 
     func stop(retainingBufferedSamples: Bool) {
@@ -3646,6 +5024,16 @@ private protocol CaptureFeatureDevicePoseRuntime: AnyObject {
 
     func start(configuration: CaptureFeatureDevicePoseRuntimeConfiguration) throws
     func stop()
+    #if canImport(StockpileMobileFirstCapture)
+    func startBundleRecording(
+        captureID: String,
+        siteID: String?,
+        materialCode: String,
+        densityKgPerM3: Int,
+        pileSizeMode: String?
+    ) throws
+    func stopBundleRecording() async throws -> StockpileCaptureBundleRecordingOutput
+    #endif
 }
 
 private enum CaptureFeatureDevicePoseRuntimeStatus: String, Sendable {
@@ -3676,6 +5064,28 @@ private enum CaptureFeatureDevicePoseRuntimeStatus: String, Sendable {
         }
     }
 }
+
+#if canImport(StockpileMobileFirstCapture)
+private extension CaptureFeatureDevicePoseRuntime {
+    func startBundleRecording(
+        captureID: String,
+        siteID: String?,
+        materialCode: String,
+        densityKgPerM3: Int,
+        pileSizeMode: String?
+    ) throws {
+        throw CaptureFeatureDevicePoseRuntimeError.unavailable(
+            "Markerless bundle recording is unavailable for this capture runtime."
+        )
+    }
+
+    func stopBundleRecording() async throws -> StockpileCaptureBundleRecordingOutput {
+        throw CaptureFeatureDevicePoseRuntimeError.unavailable(
+            "Markerless bundle recording is unavailable for this capture runtime."
+        )
+    }
+}
+#endif
 
 private struct CaptureFeatureDevicePoseRuntimeSample: Equatable, Sendable {
     let sequenceNumber: Int
@@ -3800,6 +5210,40 @@ private final class CaptureFeatureModuleDevicePoseRuntime: CaptureFeatureDeviceP
         onSnapshotUpdated?(stoppedSnapshot)
     }
 
+    func startBundleRecording(
+        captureID: String,
+        siteID: String?,
+        materialCode: String,
+        densityKgPerM3: Int,
+        pileSizeMode: String?
+    ) throws {
+        guard let session = session as? StockpileARKitDevicePoseCaptureSession else {
+            throw StockpileDevicePoseCaptureError.runtimeFailure(
+                "Markerless bundle recording requires the ARKit LiDAR capture runtime."
+            )
+        }
+        try session.startBundleRecording(
+            captureID: captureID,
+            siteID: siteID,
+            materialCode: materialCode,
+            densityKgPerM3: densityKgPerM3,
+            pileSizeMode: pileSizeMode
+        )
+    }
+
+    func stopBundleRecording() async throws -> StockpileCaptureBundleRecordingOutput {
+        guard let session = session as? StockpileARKitDevicePoseCaptureSession else {
+            throw StockpileDevicePoseCaptureError.runtimeFailure(
+                "Markerless bundle recording requires the ARKit LiDAR capture runtime."
+            )
+        }
+        return try await withCheckedThrowingContinuation { continuation in
+            session.stopBundleRecording { result in
+                continuation.resume(with: result)
+            }
+        }
+    }
+
     private static func makeSnapshot(
         from snapshot: StockpileDevicePoseCaptureSnapshot
     ) -> CaptureFeatureDevicePoseRuntimeSnapshot {
@@ -3863,6 +5307,12 @@ private final class CaptureFeatureModuleDevicePoseRuntime: CaptureFeatureDeviceP
     private static func degrees(from radians: Float) -> Double {
         Double(radians) * 180 / Double.pi
     }
+
+    #if canImport(ARKit)
+    var underlyingARSession: ARSession? {
+        (session as? StockpileARKitDevicePoseCaptureSession)?.underlyingARSession
+    }
+    #endif
 }
 #endif
 

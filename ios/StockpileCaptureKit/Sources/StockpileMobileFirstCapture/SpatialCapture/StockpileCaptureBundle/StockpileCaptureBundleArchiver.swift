@@ -138,14 +138,16 @@ public struct StockpileCaptureBundleArchiver: @unchecked Sendable {
             }
         }
 
-        // ZIPFoundation writes a standard PKZIP archive. Python's stdlib `zipfile`
-        // module can read the result without any additional flags.
+        // Most bundle bytes are already JPEG or raw binary depth. Deflating them
+        // on an iPhone can keep the operator stuck on "Sealing" for minutes, so
+        // store entries without compression and let upload/network handle the
+        // tradeoff. Python's stdlib `zipfile` reads this standard ZIP normally.
         do {
             try fileManager.zipItem(
                 at: stagingDirectory,
                 to: outputURL,
                 shouldKeepParent: false,
-                compressionMethod: .deflate
+                compressionMethod: .none
             )
         } catch {
             throw StockpileCaptureBundleArchiverError.archiveCreationFailed(error.localizedDescription)

@@ -4,6 +4,7 @@ import logging
 import re
 from dataclasses import dataclass, field
 from pathlib import Path
+from typing import Any
 
 import numpy as np
 import open3d as o3d
@@ -11,7 +12,8 @@ from sklearn.cluster import DBSCAN
 
 from .colmap_runner import ColmapCamera, ColmapImage, ColmapPoint3D
 from .cone_detection import ConeDetection
-from .config import ScaleCalibrationConfig
+from .config import ScaleCalibrationConfig, TaggedReferenceConfig
+from .tagged_references import TaggedReferenceDetection
 
 logger = logging.getLogger(__name__)
 
@@ -29,6 +31,10 @@ class CalibrationResult:
     num_cones_used: int
     per_cone_scales: list[float]
     cone_3d_positions: list[np.ndarray]
+    reference_family: str = "cone"
+    reference_source: str = "cone_projection"
+    num_references_used: int | None = None
+    reference_3d_positions: list[np.ndarray] = field(default_factory=list)
     detected_cone_frames: int = 0
     registered_cone_frames: int = 0
     total_cone_detections: int = 0
@@ -37,10 +43,18 @@ class CalibrationResult:
     selected_method: str = "projection"
     projection_scale_factor: float | None = None
     projection_confidence: float | None = None
+    mobile_pose_scale_factor: float | None = None
+    mobile_pose_confidence: float | None = None
     camera_height_scale_factor: float | None = None
     camera_height_confidence: float | None = None
     scale_disagreement_ratio: float | None = None
     notes: list[str] = field(default_factory=list)
+
+    def __post_init__(self):
+        if self.num_references_used is None:
+            self.num_references_used = self.num_cones_used
+        if not self.reference_3d_positions and self.cone_3d_positions:
+            self.reference_3d_positions = list(self.cone_3d_positions)
 
 
 def _qvec_to_rotmat(qvec: np.ndarray) -> np.ndarray:
@@ -57,6 +71,124 @@ def _camera_center(image: ColmapImage) -> np.ndarray:
     """Get camera center in world coordinates: C = -R^T @ t."""
     R = _qvec_to_rotmat(image.qvec)
     return -R.T @ image.tvec
+
+
+def _tracking_state_is_stable(state: str | None) -> bool:
+    if state is None:
+        return True
+    normalized = str(state).strip().lower()
+    if not normalized:
+        return True
+    if normalized in {"normal", "tracking", "tracked", "stable"}:
+        return True
+    return not any(
+        token in normalized
+        for token in (
+            "limited",
+            "unavailable",
+            "not_available",
+            "not available",
+            "initializing",
+            "relocalizing",
+            "lost",
+            "interrupted",
+            "failed",
+        )
+    )
+
+
+def _coerce_vector3(value: Any) -> np.ndarray | None:
+    if value is None:
+        return None
+    if isinstance(value, np.ndarray):
+        if value.shape == (3,):
+            return value.astype(float)
+        return None
+    if isinstance(value, (list, tuple)) and len(value) == 3:
+        try:
+            return np.asarray([float(value[0]), float(value[1]), float(value[2])], dtype=float)
+        except (TypeError, ValueError):
+            return None
+
+    components = []
+    for name in ("x", "y", "z"):
+        component = getattr(value, name, None)
+        if component is None:
+            return None
+        try:
+            components.append(float(component))
+        except (TypeError, ValueError):
+            return None
+    return np.asarray(components, dtype=float)
+
+
+def _coerce_float(value: Any) -> float | None:
+    if value is None:
+        return None
+    try:
+        return float(value)
+    except (TypeError, ValueError):
+        return None
+
+
+def _capture_video_frame_rate(capture_metadata: Any) -> float | None:
+    if capture_metadata is None:
+        return None
+    sensor_metadata = getattr(capture_metadata, "sensor_metadata", None)
+    if sensor_metadata is None:
+        return None
+    fps = _coerce_float(getattr(sensor_metadata, "video_frame_rate", None))
+    if fps is None or fps <= 0:
+        return None
+    return fps
+
+
+def _capture_pose_sampling_hz(capture_metadata: Any) -> float | None:
+    if capture_metadata is None:
+        return None
+    sensor_metadata = getattr(capture_metadata, "sensor_metadata", None)
+    if sensor_metadata is None:
+        return None
+    pose_sampling_hz = _coerce_float(getattr(sensor_metadata, "pose_sampling_hz", None))
+    if pose_sampling_hz is None or pose_sampling_hz <= 0:
+        return None
+    return pose_sampling_hz
+
+
+def _stable_mobile_pose_samples(
+    pose_samples: tuple[Any, ...] | list[Any] | None,
+) -> list[tuple[float, np.ndarray]]:
+    stable_samples: list[tuple[float, np.ndarray]] = []
+    if not pose_samples:
+        return stable_samples
+
+    for sample in pose_samples:
+        timestamp_seconds = _coerce_float(
+            getattr(sample, "time_offset_sec", getattr(sample, "timestamp_seconds", None))
+        )
+        if timestamp_seconds is None or timestamp_seconds < 0:
+            continue
+        position = _coerce_vector3(
+            getattr(sample, "position_m", getattr(sample, "position_xyz_m", None))
+        )
+        if position is None:
+            continue
+        if not _tracking_state_is_stable(getattr(sample, "tracking_state", None)):
+            continue
+        horizontal_accuracy_m = _coerce_float(getattr(sample, "horizontal_accuracy_m", None))
+        vertical_accuracy_m = _coerce_float(getattr(sample, "vertical_accuracy_m", None))
+        if horizontal_accuracy_m is not None and horizontal_accuracy_m > 1.0:
+            continue
+        if vertical_accuracy_m is not None and vertical_accuracy_m > 2.0:
+            continue
+        stable_samples.append((timestamp_seconds, position))
+
+    stable_samples.sort(key=lambda item: item[0])
+    return stable_samples
+
+
+def _ratio_between_scales(scale_a: float, scale_b: float) -> float:
+    return max(scale_a / scale_b, scale_b / scale_a)
 
 
 def _mad_inlier_mask(values: np.ndarray, mad_multiplier: float) -> np.ndarray:
@@ -424,9 +556,213 @@ def calibrate_scale_projection(
         num_cones_used=len(unique_positions),
         per_cone_scales=list(filtered_scales),
         cone_3d_positions=unique_positions,
+        reference_family="cone",
+        reference_source="projection",
+        num_references_used=len(unique_positions),
+        reference_3d_positions=list(unique_positions),
         selected_method="projection",
         projection_scale_factor=scale_factor,
         projection_confidence=confidence,
+        notes=notes,
+    )
+
+
+def calibrate_scale_from_tagged_references(
+    tagged_reference_detections: dict[str, list[TaggedReferenceDetection]],
+    images: dict[int, ColmapImage],
+    points3d: dict[int, ColmapPoint3D],
+    cameras: dict[int, ColmapCamera],
+    tagged_reference_config: TaggedReferenceConfig,
+    config: ScaleCalibrationConfig,
+) -> CalibrationResult:
+    """Compute scale from known tagged-reference dimensions.
+
+    This mirrors the cone projection calibration path but uses machine-readable
+    marker identities and a known marker edge length instead of relying on red
+    blob heuristics. It gives us a deterministic path toward release-grade
+    scale once the field workflow standardizes on tagged references.
+    """
+    name_to_image = {img.name: img for img in images.values()}
+    idx_to_colmap: dict[int, ColmapImage] = {}
+    for img in images.values():
+        idx = _frame_index(img.name)
+        if idx is not None:
+            idx_to_colmap[idx] = img
+    sorted_registered_indices = sorted(idx_to_colmap.keys()) if idx_to_colmap else []
+
+    def _resolve_colmap_image(frame_name: str) -> ColmapImage | None:
+        direct = name_to_image.get(frame_name)
+        if direct is not None:
+            return direct
+        if not sorted_registered_indices:
+            return None
+        idx = _frame_index(frame_name)
+        if idx is None:
+            return None
+
+        import bisect
+
+        pos = bisect.bisect_left(sorted_registered_indices, idx)
+        candidates = []
+        if pos < len(sorted_registered_indices):
+            candidates.append(sorted_registered_indices[pos])
+        if pos > 0:
+            candidates.append(sorted_registered_indices[pos - 1])
+        best = min(candidates, key=lambda candidate: abs(candidate - idx))
+        if abs(best - idx) > 5:
+            return None
+        return idx_to_colmap[best]
+
+    per_reference_scales: list[float] = []
+    per_reference_pixel_sizes: list[float] = []
+    reference_positions: list[np.ndarray] = []
+    unique_reference_ids: set[int] = set()
+    notes: list[str] = []
+    noted_extended_geometry_ids: set[int] = set()
+    fallback_count = 0
+
+    for frame_name, detections in tagged_reference_detections.items():
+        colmap_img = _resolve_colmap_image(frame_name)
+        if colmap_img is None:
+            continue
+        if colmap_img.name != frame_name:
+            fallback_count += 1
+
+        camera = cameras.get(colmap_img.camera_id)
+        if camera is None:
+            continue
+
+        focal = camera.focal_length
+        cam_center = _camera_center(colmap_img)
+
+        for detection in detections:
+            spec = tagged_reference_config.spec_for_tag(detection.tag_id)
+            if spec is None:
+                continue
+
+            pixel_size = detection.mean_edge_length_px
+            if pixel_size < tagged_reference_config.min_tag_edge_px:
+                continue
+
+            x, y, w, h = detection.bbox
+            margin = 5
+            x1, y1 = x - margin, y - margin
+            x2, y2 = x + w + margin, y + h + margin
+
+            matched_distances: list[float] = []
+            matched_positions: list[np.ndarray] = []
+            for idx in range(len(colmap_img.xys)):
+                kx, ky = colmap_img.xys[idx]
+                p3d_id = int(colmap_img.point3d_ids[idx])
+                if p3d_id < 0 or p3d_id not in points3d:
+                    continue
+                if not (x1 <= kx <= x2 and y1 <= ky <= y2):
+                    continue
+
+                pt3d = points3d[p3d_id].xyz
+                dist = np.linalg.norm(pt3d - cam_center)
+                matched_distances.append(dist)
+                matched_positions.append(pt3d)
+
+            if not matched_distances:
+                continue
+
+            dists_arr = np.asarray(matched_distances, dtype=float)
+            med_dist = float(np.median(dists_arr))
+            depth_mask = dists_arr <= 2.0 * med_dist
+            if depth_mask.sum() < 1:
+                continue
+            matched_distances = list(dists_arr[depth_mask])
+            matched_positions = [pos for pos, keep in zip(matched_positions, depth_mask) if keep]
+
+            nearest_dist = min(matched_distances)
+            if nearest_dist <= 1e-6:
+                continue
+
+            # Current tagged-reference calibration only observes the printed tag
+            # corners, so the physical tag face must be the scale basis here.
+            scale = spec.calibration_tag_size_m * focal / (pixel_size * nearest_dist)
+            if not (config.min_plausible_scale <= scale <= config.max_plausible_scale):
+                continue
+
+            per_reference_scales.append(scale)
+            per_reference_pixel_sizes.append(pixel_size)
+            unique_reference_ids.add(detection.tag_id)
+            if spec.has_extended_reference_geometry and detection.tag_id not in noted_extended_geometry_ids:
+                noted_extended_geometry_ids.add(detection.tag_id)
+                notes.append(
+                    f"Tag {spec.display_name} used the printed tag size ({spec.calibration_tag_size_m:.3f} m) "
+                    "for calibration; larger reference-body dimensions are not yet part of the corner-based solve."
+                )
+
+            reference_points = _select_cone_position_points(
+                matched_positions,
+                matched_distances,
+                config.cone_position_percentile,
+                config.cone_position_min_points,
+            )
+            if len(reference_points) > 0:
+                reference_positions.append(np.median(reference_points, axis=0))
+
+    if not per_reference_scales:
+        raise RuntimeError("No valid tagged-reference scale samples could be recovered.")
+
+    scales_arr = np.asarray(per_reference_scales, dtype=float)
+    pixel_sizes_arr = np.asarray(per_reference_pixel_sizes, dtype=float)
+    inlier_mask = _mad_inlier_mask(scales_arr, config.projection_outlier_mad_multiplier)
+    if int(inlier_mask.sum()) >= 3:
+        removed = int((~inlier_mask).sum())
+        if removed:
+            logger.info(
+                "Tagged-reference scale trimming removed %d / %d outlier samples",
+                removed,
+                len(scales_arr),
+            )
+        scales_arr = scales_arr[inlier_mask]
+        pixel_sizes_arr = pixel_sizes_arr[inlier_mask]
+
+    scale_factor, selection_method = _select_projection_scale_value(
+        scales_arr,
+        pixel_sizes_arr,
+        config,
+    )
+
+    confidence = min(
+        1.0,
+        len(scales_arr) / max(3.0, float(tagged_reference_config.min_detections_per_tag) * 2.0),
+    )
+    if len(unique_reference_ids) >= 2:
+        confidence = min(1.0, confidence + 0.15)
+    if selection_method == "height_weighted":
+        notes.append(
+            "Tagged-reference scale used a size-weighted projection estimate to reduce far-marker bias."
+        )
+    if fallback_count:
+        notes.append(
+            f"Tagged-reference calibration borrowed the nearest registered COLMAP pose for {fallback_count} frame(s)."
+        )
+
+    logger.info(
+        "Tagged-reference scale: %.4f m/unit (from %d samples, %d unique tags, confidence=%.2f)",
+        scale_factor,
+        len(scales_arr),
+        len(unique_reference_ids),
+        confidence,
+    )
+
+    return CalibrationResult(
+        scale_factor=scale_factor,
+        confidence=max(0.0, min(confidence, 1.0)),
+        num_cones_used=0,
+        per_cone_scales=list(scales_arr),
+        cone_3d_positions=list(reference_positions),
+        reference_family=tagged_reference_config.family,
+        reference_source="tagged_projection",
+        num_references_used=len(unique_reference_ids),
+        reference_3d_positions=list(reference_positions),
+        selected_method="tagged_projection",
+        projection_scale_factor=scale_factor,
+        projection_confidence=max(0.0, min(confidence, 1.0)),
         notes=notes,
     )
 
@@ -618,6 +954,9 @@ def calibrate_scale_from_camera_height(
         num_cones_used=0,
         per_cone_scales=[best_scale],
         cone_3d_positions=[],
+        reference_family="camera_height",
+        reference_source="camera_height",
+        num_references_used=0,
         selected_method="camera_height",
         camera_height_scale_factor=best_scale,
         camera_height_confidence=max(0.0, min(best_score, 1.0)) * 0.6,
@@ -631,6 +970,8 @@ def calibrate_scale(
     points3d: dict[int, ColmapPoint3D],
     config: ScaleCalibrationConfig | None = None,
     cameras: dict[int, ColmapCamera] | None = None,
+    tagged_reference_detections: dict[str, list[TaggedReferenceDetection]] | None = None,
+    tagged_reference_config: TaggedReferenceConfig | None = None,
 ) -> CalibrationResult:
     """Main calibration entry point.
 
@@ -638,9 +979,33 @@ def calibrate_scale(
     with camera-height method. Uses the method with better confidence.
     """
     config = config or ScaleCalibrationConfig()
+    tagged_reference_config = tagged_reference_config or TaggedReferenceConfig()
 
     projection_result = None
     camera_result = None
+    tagged_reference_result = None
+
+    if (
+        cameras
+        and tagged_reference_config.enabled
+        and tagged_reference_detections
+    ):
+        try:
+            tagged_reference_result = calibrate_scale_from_tagged_references(
+                tagged_reference_detections,
+                images,
+                points3d,
+                cameras,
+                tagged_reference_config,
+                config,
+            )
+            logger.info(
+                "Tagged-reference scale: %.4f (confidence %.2f)",
+                tagged_reference_result.scale_factor,
+                tagged_reference_result.confidence,
+            )
+        except Exception as e:
+            logger.warning("Tagged-reference calibration failed: %s", e)
 
     # Try projection-based calibration
     if cameras and cone_detections:
@@ -652,6 +1017,11 @@ def calibrate_scale(
                         projection_result.scale_factor, projection_result.confidence)
         except Exception as e:
             logger.warning("Projection calibration failed: %s", e)
+
+    if tagged_reference_result and (
+        tagged_reference_config.prefer_tagged_scale_when_available or projection_result is None
+    ):
+        projection_result = tagged_reference_result
 
     # Always try camera-height method as cross-check
     try:

@@ -8,6 +8,7 @@ private enum StockpileRootTab: Hashable, CaseIterable {
     case dashboard
     case capture
     case review
+    case history
 
     var title: String {
         switch self {
@@ -17,6 +18,8 @@ private enum StockpileRootTab: Hashable, CaseIterable {
             return "Capture"
         case .review:
             return "Review"
+        case .history:
+            return "History"
         }
     }
 
@@ -28,6 +31,8 @@ private enum StockpileRootTab: Hashable, CaseIterable {
             return "Capture"
         case .review:
             return "Review"
+        case .history:
+            return "History"
         }
     }
 
@@ -39,6 +44,8 @@ private enum StockpileRootTab: Hashable, CaseIterable {
             return "camera.fill"
         case .review:
             return "checkmark.circle"
+        case .history:
+            return "clock.arrow.circlepath"
         }
     }
 
@@ -60,6 +67,8 @@ private enum StockpileRootTab: Hashable, CaseIterable {
         case .capture:
             return .capture
         case .review:
+            return .review
+        case .history:
             return .review
         }
     }
@@ -119,6 +128,10 @@ struct StockpileRootView: View {
             rootTab(.review) {
                 reviewScreen
             }
+
+            rootTab(.history) {
+                HistoryScreen(models: session.historyModels)
+            }
         }
         .toolbar(.visible, for: .tabBar)
         .toolbarBackground(.visible, for: .tabBar)
@@ -146,6 +159,194 @@ struct StockpileRootView: View {
             model: session.reviewQueueModel,
             style: .operational
         )
+    }
+}
+
+private struct HistoryScreen: View {
+    let models: [StockpileResultScreenModel]
+
+    var body: some View {
+        ScrollView {
+            LazyVStack(alignment: .leading, spacing: StockpileSpacing.medium) {
+                header
+
+                if models.isEmpty {
+                    emptyState
+                } else {
+                    ForEach(models, id: \.runID) { model in
+                        NavigationLink {
+                            StockpileResultScreenView(
+                                model: model,
+                                style: .operational
+                            )
+                        } label: {
+                            HistoryRunRow(model: model)
+                        }
+                        .buttonStyle(.plain)
+                    }
+                }
+            }
+            .padding(StockpileSpacing.large)
+        }
+        .scrollIndicators(.hidden)
+        .background(StockpilePalette.canvas.color.ignoresSafeArea())
+    }
+
+    private var header: some View {
+        VStack(alignment: .leading, spacing: StockpileSpacing.small) {
+            Text("Today’s tests")
+                .font(StockpileTypography.hero.font)
+                .foregroundStyle(StockpilePalette.ink.color)
+
+            Text("Open any run to inspect its backend result and rotate the 3D preview.")
+                .font(StockpileTypography.body.font)
+                .foregroundStyle(StockpilePalette.mutedInk.color)
+                .fixedSize(horizontal: false, vertical: true)
+        }
+        .padding(.bottom, StockpileSpacing.small)
+    }
+
+    private var emptyState: some View {
+        StockpileCard(appearance: .outlined) {
+            VStack(alignment: .leading, spacing: StockpileSpacing.small) {
+                Image(systemName: "clock.badge.questionmark")
+                    .font(.system(size: 28, weight: .semibold))
+                    .foregroundStyle(StockpilePalette.accent.color)
+
+                Text("No history yet")
+                    .font(StockpileTypography.sectionTitle.font)
+                    .foregroundStyle(StockpilePalette.ink.color)
+
+                Text("Completed captures will appear here after upload and backend processing finish.")
+                    .font(StockpileTypography.callout.font)
+                    .foregroundStyle(StockpilePalette.mutedInk.color)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+        }
+    }
+}
+
+private struct HistoryRunRow: View {
+    let model: StockpileResultScreenModel
+
+    var body: some View {
+        StockpileCard(appearance: .outlined) {
+            VStack(alignment: .leading, spacing: StockpileSpacing.medium) {
+                HStack(alignment: .top, spacing: StockpileSpacing.medium) {
+                    Image(systemName: statusIcon)
+                        .font(.system(size: 20, weight: .semibold, design: .rounded))
+                        .foregroundStyle(statusTone.theme.accent.color)
+                        .frame(width: 32, height: 32)
+                        .background(statusTone.theme.background.color, in: Circle())
+
+                    VStack(alignment: .leading, spacing: StockpileSpacing.xSmall) {
+                        Text(model.pileName)
+                            .font(StockpileTypography.sectionTitle.font)
+                            .foregroundStyle(StockpilePalette.ink.color)
+                            .lineLimit(2)
+
+                        Text(model.confidence.summary)
+                            .font(StockpileTypography.caption.font)
+                            .foregroundStyle(StockpilePalette.mutedInk.color)
+                            .lineLimit(3)
+                    }
+
+                    Spacer(minLength: StockpileSpacing.small)
+
+                    Image(systemName: "chevron.right")
+                        .font(.system(size: 15, weight: .semibold))
+                        .foregroundStyle(StockpilePalette.mutedInk.color)
+                }
+
+                HStack(spacing: StockpileSpacing.small) {
+                    StockpileBadge(statusLabel, tone: statusTone)
+
+                    if model.reconstruction != nil {
+                        StockpileBadge("3D preview", tone: .info)
+                    }
+
+                    Spacer(minLength: 0)
+                }
+
+                metrics
+            }
+        }
+    }
+
+    private var metrics: some View {
+        ViewThatFits(in: .horizontal) {
+            HStack(spacing: StockpileSpacing.medium) {
+                metric(label: "Volume", value: volumeLabel)
+                metric(label: "Weight", value: weightLabel)
+                metric(label: "Confidence", value: "\(model.confidence.score)/100")
+            }
+
+            VStack(alignment: .leading, spacing: StockpileSpacing.small) {
+                metric(label: "Volume", value: volumeLabel)
+                metric(label: "Weight", value: weightLabel)
+                metric(label: "Confidence", value: "\(model.confidence.score)/100")
+            }
+        }
+    }
+
+    private func metric(label: String, value: String) -> some View {
+        VStack(alignment: .leading, spacing: StockpileSpacing.xxxSmall) {
+            Text(label.uppercased())
+                .font(StockpileTypography.caption.font)
+                .foregroundStyle(StockpilePalette.mutedInk.color)
+
+            Text(value)
+                .font(StockpileTypography.callout.font.weight(.semibold))
+                .foregroundStyle(StockpilePalette.ink.color)
+        }
+        .frame(maxWidth: .infinity, alignment: .leading)
+    }
+
+    private var volumeLabel: String {
+        guard let measurement = model.measurement else {
+            return "Blocked"
+        }
+        return String(format: "%.2f m³", measurement.volumeM3)
+    }
+
+    private var weightLabel: String {
+        guard let measurement = model.measurement else {
+            return "Retake"
+        }
+        return String(format: "%.2f t", measurement.weightTonnes)
+    }
+
+    private var statusLabel: String {
+        switch model.outcome {
+        case .verified:
+            return "Verified"
+        case .reviewOnly:
+            return "Review"
+        case .blocked:
+            return "Blocked"
+        }
+    }
+
+    private var statusTone: StockpileStatusTone {
+        switch model.outcome {
+        case .verified:
+            return .success
+        case .reviewOnly:
+            return .caution
+        case .blocked:
+            return .critical
+        }
+    }
+
+    private var statusIcon: String {
+        switch model.outcome {
+        case .verified:
+            return "checkmark"
+        case .reviewOnly:
+            return "exclamationmark"
+        case .blocked:
+            return "arrow.counterclockwise"
+        }
     }
 }
 

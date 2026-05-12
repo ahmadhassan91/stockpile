@@ -95,6 +95,11 @@ enum StockpileLiveGuidanceModeConfig: Sendable, Equatable {
 }
 
 enum StockpileLiveGuidanceEstimator {
+    private static let markerlessMinimumProductionDuration: TimeInterval = 45
+    private static let markerlessMinimumReviewDuration: TimeInterval = 25
+    private static let markerlessGoodSensorThreshold = 0.72
+    private static let markerlessBlockedSensorThreshold = 0.5
+
     static func estimate(
         totalSteps: Int,
         manualCompletedSteps: Int,
@@ -123,7 +128,8 @@ enum StockpileLiveGuidanceEstimator {
             sceneCoverageAccumulator: sceneCoverageAccumulator,
             sceneAnalysis: sceneAnalysis,
             manualCompletedSteps: manualCompletedSteps,
-            totalSteps: totalSteps
+            totalSteps: totalSteps,
+            markerlessCaptureEnabled: markerlessCaptureEnabled
         )
         let sceneRejection = sceneRejectionMetric(
             from: sceneAnalysis,
@@ -153,8 +159,15 @@ enum StockpileLiveGuidanceEstimator {
             max(manualCompletedSteps, synthesizedCompletedSteps),
             maximumCompletedSteps
         )
-        let phase: StockpileCameraCaptureSessionPhase =
-            guidance.isReadyToFinish && completedSteps >= maximumCompletedSteps
+        let canFinish = completedSteps >= maximumCompletedSteps
+            && (
+                guidance.isReadyToFinish
+                    || (
+                        markerlessCaptureEnabled
+                            && markerlessGuidanceCanSealWithReview(guidance)
+                    )
+            )
+        let phase: StockpileCameraCaptureSessionPhase = canFinish
             ? .readyToFinish
             : .capturing
 
@@ -163,6 +176,26 @@ enum StockpileLiveGuidanceEstimator {
             completedSteps: completedSteps,
             phase: phase
         )
+    }
+
+    private static func markerlessGuidanceCanSealWithReview(
+        _ guidance: StockpileCaptureGuidanceSummary
+    ) -> Bool {
+        guard guidance.coverage.level == .good else {
+            return false
+        }
+
+        let requiredSignals = [
+            guidance.sceneRejection,
+            guidance.referenceVisibility,
+            guidance.pileSegmentation,
+            guidance.sceneFit,
+            guidance.toeSegmentation,
+            guidance.motion
+        ]
+        .compactMap { $0 }
+
+        return requiredSignals.contains { $0.level == .blocked } == false
     }
 
     private static func referenceVisibilityMetric(
@@ -244,17 +277,45 @@ enum StockpileLiveGuidanceEstimator {
         evidence: MarkerlessSceneEvidence?
     ) -> StockpileCaptureGuidanceMetric {
         let optionalReferenceCount = min(sceneAnalysis.strongestReferenceCount, 2)
+        let depthScore = evidence?.depthScore ?? sceneAnalysis.depthTrust
+        let trackingScore = evidence?.trackingScore ?? sceneAnalysis.trackingTrust
         let evidenceScore = evidence?.score ?? sceneAnalysis.markerlessVisualSceneFitTrust
-        let score = min(max(0.82, evidenceScore * 0.12 + 0.78), 0.96)
-        let detail = optionalReferenceCount > 0
-            ? "Markerless capture is using depth and tracking; tagged references are optional."
-            : "Markerless capture is using depth and tracking instead of tagged references."
+        let sensorScore = min(depthScore ?? 0, trackingScore ?? 0)
+        let score: Double
+        let detail: String
+
+        if depthScore == nil {
+            score = 0.28
+            detail = "Hold wider until depth can read the full pile face."
+        } else if trackingScore == nil {
+            score = 0.34
+            detail = "Keep walking slowly while tracking settles."
+        } else if sensorScore < markerlessBlockedSensorThreshold {
+            score = max(0.28, sensorScore * 0.86)
+            detail = depthScore ?? 0 < markerlessBlockedSensorThreshold
+                ? "Hold wider until depth can read the toe and pile face."
+                : "Keep walking slowly while tracking returns to normal."
+        } else {
+            score = min(
+                sensorScore * 0.74 + evidenceScore * 0.2 + 0.06,
+                0.96
+            )
+            if sensorScore >= markerlessGoodSensorThreshold {
+                detail = optionalReferenceCount > 0
+                    ? "Depth and tracking are strong; tagged references are optional."
+                    : "Depth and tracking are strong enough for markerless capture."
+            } else if depthScore ?? 0 < markerlessGoodSensorThreshold {
+                detail = "Depth is still settling. Hold wider and keep the toe in frame."
+            } else {
+                detail = "Tracking is still settling. Keep walking slowly and level."
+            }
+        }
 
         return StockpileCaptureGuidanceMetric(
             title: "LiDAR tracking",
             score: score,
-            watchThreshold: 0.7,
-            blockedThreshold: 0.2,
+            watchThreshold: markerlessGoodSensorThreshold,
+            blockedThreshold: markerlessBlockedSensorThreshold,
             detail: detail,
             observedCount: optionalReferenceCount,
             targetCount: nil
@@ -371,12 +432,15 @@ enum StockpileLiveGuidanceEstimator {
         sceneCoverageAccumulator: Double,
         sceneAnalysis: StockpileCaptureSceneAnalysis,
         manualCompletedSteps: Int,
-        totalSteps: Int
+        totalSteps: Int,
+        markerlessCaptureEnabled: Bool
     ) -> StockpileCaptureGuidanceMetric {
         let maximumCompletedSteps = max(totalSteps - 1, 1)
         let manualFloor = min(max(Double(manualCompletedSteps) / Double(maximumCompletedSteps), 0), 1)
         let sceneTravel = min(max(sceneCoverageAccumulator, 0), 1)
-        let timeAssist = min(max(elapsedRecordingTime / 24.0, 0), 0.5)
+        let timeAssist = markerlessCaptureEnabled
+            ? 0
+            : min(max(elapsedRecordingTime / 24.0, 0), 0.5)
         let toeAssist = max((sceneAnalysis.toeSegmentationTrust ?? 0) - 0.55, 0) * 0.18
         let toePenalty = sceneAnalysis.toeSegmentationTrust.map { max(0.62 - $0, 0) * 0.42 } ?? 0
         let scenePenalty =
@@ -394,18 +458,49 @@ enum StockpileLiveGuidanceEstimator {
         }
 
         let rawScore = sceneTravel + timeAssist + referenceAssist + toeAssist - scenePenalty - toePenalty
-        let score = min(max(manualFloor, rawScore), 1)
+        let scoreBeforeDurationGate = min(max(manualFloor, rawScore), 1)
+        let durationGate: Double
+        if markerlessCaptureEnabled {
+            if elapsedRecordingTime < 10 {
+                durationGate = 0.42
+            } else if elapsedRecordingTime < markerlessMinimumReviewDuration {
+                durationGate = 0.62
+            } else if elapsedRecordingTime < markerlessMinimumProductionDuration {
+                durationGate = 0.69
+            } else {
+                durationGate = 1
+            }
+        } else {
+            if elapsedRecordingTime < 6 {
+                durationGate = 0.46
+            } else if elapsedRecordingTime < 12 {
+                durationGate = 0.62
+            } else if elapsedRecordingTime < 18 {
+                durationGate = 0.69
+            } else {
+                durationGate = 1
+            }
+        }
+        let score = min(scoreBeforeDurationGate, durationGate)
         let detail: String
         if let toeTrust = sceneAnalysis.toeSegmentationTrust, toeTrust < 0.38 {
             detail = "Keep the full toe boundary visible before you seal the clip."
         } else if let toeTrust = sceneAnalysis.toeSegmentationTrust, toeTrust < 0.6 {
             detail = "Keep the toe boundary visible all the way around the pile."
+        } else if markerlessCaptureEnabled && elapsedRecordingTime < markerlessMinimumReviewDuration {
+            detail = "Walk slowly around the pile, keeping the full pile in frame."
+        } else if markerlessCaptureEnabled && elapsedRecordingTime < markerlessMinimumProductionDuration {
+            detail = "Keep walking around the pile so the app can see every side."
+        } else if elapsedRecordingTime < 6 {
+            detail = "Walk slowly around the pile, keeping the full pile in frame."
+        } else if elapsedRecordingTime < 18 {
+            detail = "Keep walking around the pile so the app can see every side."
         } else if score >= 0.82 {
             detail = "Perimeter coverage looks strong. Finish the last visible edge and seal the clip."
         } else if score >= 0.6 {
-            detail = "Coverage is building well. Keep the lap moving so the far edge is not missed."
+            detail = "Coverage is building well. Keep walking around the pile until the far edge is covered."
         } else {
-            detail = "Keep walking the toe boundary so the app sees more of the pile perimeter."
+            detail = "Walk slowly around the pile so the app can capture the full perimeter."
         }
 
         return StockpileCaptureGuidanceMetric(

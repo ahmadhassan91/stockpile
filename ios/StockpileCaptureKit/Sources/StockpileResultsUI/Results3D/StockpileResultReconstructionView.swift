@@ -304,7 +304,7 @@ private struct ReconstructionViewport: View {
                         reconstruction: reconstruction,
                         mode: mode
                     ),
-                    options: []
+                    options: [.allowsCameraControl, .autoenablesDefaultLighting]
                 )
                 .frame(height: viewportHeight)
                 .clipShape(RoundedRectangle(cornerRadius: StockpileCornerRadius.card))

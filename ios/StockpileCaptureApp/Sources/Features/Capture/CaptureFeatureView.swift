@@ -5,6 +5,12 @@ import StockpileCaptureFlow
 import StockpileDesignSystem
 import StockpileResultsUI
 import UIKit
+#if canImport(ARKit)
+import ARKit
+#endif
+#if canImport(StockpileMobileFirstCapture)
+import StockpileMobileFirstCapture
+#endif
 
 @MainActor
 struct CaptureFeatureView: View {
@@ -79,7 +85,20 @@ struct CaptureFeatureView: View {
                 primaryAction: store.performPrimaryAction,
                 restartAction: store.reset,
                 fallbackMovie: fallbackMovieState,
-                liveQuickEstimate: liveQuickVolumeReadout
+                liveQuickEstimate: liveQuickVolumeReadout,
+                materialOptions: store.materialOptions,
+                selectedMaterial: store.selectedMaterialOption,
+                selectMaterial: store.selectMaterial,
+                pileSizeOptions: store.pileSizeOptions,
+                selectedPileSizeMode: store.selectedPileSizeMode,
+                selectPileSizeMode: store.selectPileSizeMode,
+                arSession: {
+                    #if canImport(ARKit)
+                    store.markerlessARSession
+                    #else
+                    nil
+                    #endif
+                }()
             )
         default:
             ScrollView {
@@ -87,7 +106,13 @@ struct CaptureFeatureView: View {
                     CaptureFeatureHeroCard(
                         phase: store.phase,
                         home: store.configuration.home,
-                        guidedCapture: store.configuration.guidedCapture
+                        guidedCapture: store.configuration.guidedCapture,
+                        materialOptions: store.materialOptions,
+                        selectedMaterial: store.selectedMaterialOption,
+                        selectMaterial: store.selectMaterial,
+                        pileSizeOptions: store.pileSizeOptions,
+                        selectedPileSizeMode: store.selectedPileSizeMode,
+                        selectPileSizeMode: store.selectPileSizeMode
                     )
 
                     CaptureWorkflowStrip(phase: store.phase)
@@ -142,7 +167,10 @@ struct CaptureFeatureView: View {
                 liveCaptureHint: store.currentActionHint,
                 startLiveCapture: store.performPrimaryAction,
                 fallbackMovie: fallbackMovieState,
-                liveQuickEstimate: liveQuickVolumeReadout
+                liveQuickEstimate: liveQuickVolumeReadout,
+                materialOptions: store.materialOptions,
+                selectedMaterial: store.selectedMaterialOption,
+                selectMaterial: store.selectMaterial
             )
         case .guidedCapture:
             CaptureGuidedStateView(
@@ -154,7 +182,20 @@ struct CaptureFeatureView: View {
                 primaryAction: store.performPrimaryAction,
                 restartAction: store.reset,
                 fallbackMovie: fallbackMovieState,
-                liveQuickEstimate: liveQuickVolumeReadout
+                liveQuickEstimate: liveQuickVolumeReadout,
+                materialOptions: store.materialOptions,
+                selectedMaterial: store.selectedMaterialOption,
+                selectMaterial: store.selectMaterial,
+                pileSizeOptions: store.pileSizeOptions,
+                selectedPileSizeMode: store.selectedPileSizeMode,
+                selectPileSizeMode: store.selectPileSizeMode,
+                arSession: {
+                    #if canImport(ARKit)
+                    store.markerlessARSession
+                    #else
+                    nil
+                    #endif
+                }()
             )
         case .uploadInProgress:
             CaptureProgressStateView(content: store.currentProgressContent)
@@ -856,6 +897,12 @@ private struct CaptureFeatureHeroCard: View {
     let phase: CaptureFeaturePhase
     let home: CaptureHomeContent
     let guidedCapture: GuidedCaptureContent
+    let materialOptions: [CaptureMaterialOption]
+    let selectedMaterial: CaptureMaterialOption
+    let selectMaterial: (CaptureMaterialOption) -> Void
+    let pileSizeOptions: [CapturePileSizeMode]
+    let selectedPileSizeMode: CapturePileSizeMode
+    let selectPileSizeMode: (CapturePileSizeMode) -> Void
 
     var body: some View {
         ZStack(alignment: .topTrailing) {
@@ -906,18 +953,33 @@ private struct CaptureFeatureHeroCard: View {
 
                     Spacer(minLength: 0)
 
-                    Image(systemName: phase.heroSystemImage)
-                        .font(.system(size: 22, weight: .semibold, design: .rounded))
-                        .foregroundStyle(phase.badgeTone.theme.accent.color)
-                        .frame(width: 54, height: 54)
-                        .background(
-                            phase.badgeTone.theme.background.color.opacity(0.96),
-                            in: RoundedRectangle(cornerRadius: 18, style: .continuous)
+                    if phase == .idle {
+                        CaptureTopMaterialMenu(
+                            options: materialOptions,
+                            selectedMaterial: selectedMaterial,
+                            selectMaterial: selectMaterial,
+                            style: .light
                         )
-                        .overlay(
-                            RoundedRectangle(cornerRadius: 18, style: .continuous)
-                                .stroke(phase.badgeTone.theme.accent.color.opacity(0.16), lineWidth: 1)
+                        CaptureTopPileSizeMenu(
+                            options: pileSizeOptions,
+                            selectedMode: selectedPileSizeMode,
+                            selectMode: selectPileSizeMode,
+                            style: .light
                         )
+                    } else {
+                        Image(systemName: phase.heroSystemImage)
+                            .font(.system(size: 22, weight: .semibold, design: .rounded))
+                            .foregroundStyle(phase.badgeTone.theme.accent.color)
+                            .frame(width: 54, height: 54)
+                            .background(
+                                phase.badgeTone.theme.background.color.opacity(0.96),
+                                in: RoundedRectangle(cornerRadius: 18, style: .continuous)
+                            )
+                            .overlay(
+                                RoundedRectangle(cornerRadius: 18, style: .continuous)
+                                    .stroke(phase.badgeTone.theme.accent.color.opacity(0.16), lineWidth: 1)
+                            )
+                    }
                 }
 
                 VStack(alignment: .leading, spacing: StockpileSpacing.small) {
@@ -961,7 +1023,7 @@ private struct CaptureFeatureHeroCard: View {
             ),
             CaptureHeroMetadata(
                 title: "Material",
-                value: home.materialName,
+                value: selectedMaterial.displayName,
                 systemImage: "cube.box.fill"
             )
         ]
@@ -977,6 +1039,9 @@ private struct CaptureIdleStateView: View {
     let startLiveCapture: () -> Void
     let fallbackMovie: CaptureFallbackMovieState?
     let liveQuickEstimate: CaptureLiveQuickVolumeReadout?
+    let materialOptions: [CaptureMaterialOption]
+    let selectedMaterial: CaptureMaterialOption
+    let selectMaterial: (CaptureMaterialOption) -> Void
 
     var body: some View {
         VStack(alignment: .leading, spacing: StockpileSpacing.large) {
@@ -991,7 +1056,10 @@ private struct CaptureIdleStateView: View {
 
             CaptureReadinessCard(
                 home: home,
-                materialSuggestion: sceneIntelligence.materialSuggestion
+                materialSuggestion: sceneIntelligence.materialSuggestion,
+                materialOptions: materialOptions,
+                selectedMaterial: selectedMaterial,
+                selectMaterial: selectMaterial
             )
 
             if let fallbackMovie {
@@ -1004,6 +1072,9 @@ private struct CaptureIdleStateView: View {
 private struct CaptureReadinessCard: View {
     let home: CaptureHomeContent
     let materialSuggestion: CaptureFeatureInlineStatusContent
+    let materialOptions: [CaptureMaterialOption]
+    let selectedMaterial: CaptureMaterialOption
+    let selectMaterial: (CaptureMaterialOption) -> Void
 
     var body: some View {
         StockpileCard {
@@ -1059,7 +1130,7 @@ private struct CaptureReadinessCard: View {
                         ),
                         CaptureContextItem(
                             title: "Material",
-                            value: home.materialName,
+                            value: "\(selectedMaterial.displayName)\n\(Self.densityLabel(selectedMaterial.densityKgPerM3))",
                             systemImage: "cube.box.fill"
                         )
                     ]
@@ -1078,6 +1149,238 @@ private struct CaptureReadinessCard: View {
                     }
                 }
             }
+        }
+    }
+
+    private static func densityLabel(_ density: Int) -> String {
+        "\(density.formatted()) kg/m3"
+    }
+}
+
+private struct CaptureMaterialSelectionControl: View {
+    let options: [CaptureMaterialOption]
+    let selectedMaterial: CaptureMaterialOption
+    let selectMaterial: (CaptureMaterialOption) -> Void
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: StockpileSpacing.small) {
+            HStack(alignment: .top, spacing: StockpileSpacing.medium) {
+                VStack(alignment: .leading, spacing: StockpileSpacing.xxSmall) {
+                    Text("Material selected")
+                        .font(StockpileTypography.caption.font)
+                        .foregroundStyle(StockpilePalette.mutedInk.color)
+
+                    Text(selectedMaterial.displayName)
+                        .font(StockpileTypography.callout.font.weight(.semibold))
+                        .foregroundStyle(StockpilePalette.ink.color)
+
+                    Text("Weight uses \(selectedMaterial.densityKgPerM3.formatted()) kg/m3. Vision hints will not change this unless an operator selects a different material.")
+                        .font(StockpileTypography.caption.font)
+                        .foregroundStyle(StockpilePalette.mutedInk.color)
+                        .fixedSize(horizontal: false, vertical: true)
+                }
+
+                Spacer(minLength: 0)
+
+                Picker(
+                    "Material",
+                    selection: Binding(
+                        get: { selectedMaterial.materialCode },
+                        set: { code in
+                            guard let option = options.first(where: { $0.materialCode == code }) else { return }
+                            selectMaterial(option)
+                        }
+                    )
+                ) {
+                    ForEach(options) { option in
+                        Text(option.displayName).tag(option.materialCode)
+                    }
+                }
+                .pickerStyle(.menu)
+                .labelsHidden()
+                .tint(StockpilePalette.accent.color)
+            }
+        }
+        .padding(.horizontal, StockpileSpacing.medium)
+        .padding(.vertical, StockpileSpacing.small)
+        .background(
+            StockpilePalette.canvas.color.opacity(0.72),
+            in: RoundedRectangle(cornerRadius: 18, style: .continuous)
+        )
+        .overlay(
+            RoundedRectangle(cornerRadius: 18, style: .continuous)
+                .stroke(StockpilePalette.border.color.opacity(0.5), lineWidth: 1)
+        )
+    }
+}
+
+private struct CaptureTopMaterialMenu: View {
+    enum Style {
+        case light
+        case dark
+    }
+
+    let options: [CaptureMaterialOption]
+    let selectedMaterial: CaptureMaterialOption
+    let selectMaterial: (CaptureMaterialOption) -> Void
+    var style: Style = .light
+
+    var body: some View {
+        Menu {
+            ForEach(options) { option in
+                Button {
+                    selectMaterial(option)
+                } label: {
+                    Label(
+                        "\(option.displayName) • \(option.densityKgPerM3.formatted()) kg/m3",
+                        systemImage: option.materialCode == selectedMaterial.materialCode
+                            ? "checkmark.circle.fill"
+                            : "circle"
+                    )
+                }
+            }
+        } label: {
+            HStack(spacing: StockpileSpacing.xxSmall) {
+                Image(systemName: "cube.box.fill")
+                    .font(.system(size: 12, weight: .semibold))
+
+                VStack(alignment: .leading, spacing: 1) {
+                    Text("Material")
+                        .font(StockpileTypography.caption.font.weight(.semibold))
+                        .lineLimit(1)
+
+                    Text(selectedMaterial.displayName)
+                        .font(StockpileTypography.caption.font.weight(.bold))
+                        .lineLimit(1)
+                        .minimumScaleFactor(0.82)
+                }
+
+                Image(systemName: "chevron.down")
+                    .font(.system(size: 10, weight: .bold))
+            }
+            .foregroundStyle(foregroundColor)
+            .padding(.horizontal, StockpileSpacing.small)
+            .padding(.vertical, StockpileSpacing.xSmall)
+            .frame(minHeight: 44)
+            .background(backgroundColor, in: Capsule(style: .continuous))
+            .overlay(
+                Capsule(style: .continuous)
+                    .stroke(borderColor, lineWidth: 1)
+            )
+        }
+        .menuStyle(.button)
+        .accessibilityLabel("Select material")
+        .accessibilityValue("\(selectedMaterial.displayName), \(selectedMaterial.densityKgPerM3) kilograms per cubic meter")
+    }
+
+    private var foregroundColor: Color {
+        switch style {
+        case .light:
+            return StockpilePalette.ink.color
+        case .dark:
+            return Color.white
+        }
+    }
+
+    private var backgroundColor: Color {
+        switch style {
+        case .light:
+            return StockpilePalette.surface.color.opacity(0.96)
+        case .dark:
+            return Color.black.opacity(0.58)
+        }
+    }
+
+    private var borderColor: Color {
+        switch style {
+        case .light:
+            return StockpilePalette.border.color.opacity(0.75)
+        case .dark:
+            return Color.white.opacity(0.22)
+        }
+    }
+}
+
+private struct CaptureTopPileSizeMenu: View {
+    enum Style {
+        case light
+        case dark
+    }
+
+    let options: [CapturePileSizeMode]
+    let selectedMode: CapturePileSizeMode
+    let selectMode: (CapturePileSizeMode) -> Void
+    var style: Style = .light
+
+    var body: some View {
+        Menu {
+            ForEach(options) { mode in
+                Button {
+                    selectMode(mode)
+                } label: {
+                    Label(
+                        mode.guidance,
+                        systemImage: mode == selectedMode ? "checkmark.circle.fill" : "circle"
+                    )
+                }
+            }
+        } label: {
+            HStack(spacing: StockpileSpacing.xxSmall) {
+                Image(systemName: "scope")
+                    .font(.system(size: 12, weight: .semibold))
+
+                VStack(alignment: .leading, spacing: 1) {
+                    Text("Pile")
+                        .font(StockpileTypography.caption.font.weight(.semibold))
+                        .lineLimit(1)
+
+                    Text(selectedMode.shortLabel)
+                        .font(StockpileTypography.caption.font.weight(.bold))
+                        .lineLimit(1)
+                }
+
+                Image(systemName: "chevron.down")
+                    .font(.system(size: 10, weight: .bold))
+            }
+            .foregroundStyle(foregroundColor)
+            .padding(.horizontal, StockpileSpacing.small)
+            .padding(.vertical, StockpileSpacing.xSmall)
+            .frame(minHeight: 44)
+            .background(backgroundColor, in: Capsule(style: .continuous))
+            .overlay(
+                Capsule(style: .continuous)
+                    .stroke(borderColor, lineWidth: 1)
+            )
+        }
+        .menuStyle(.button)
+        .accessibilityLabel("Select pile size")
+        .accessibilityValue(selectedMode.displayName)
+    }
+
+    private var foregroundColor: Color {
+        switch style {
+        case .light:
+            return StockpilePalette.ink.color
+        case .dark:
+            return Color.white
+        }
+    }
+
+    private var backgroundColor: Color {
+        switch style {
+        case .light:
+            return StockpilePalette.surface.color.opacity(0.96)
+        case .dark:
+            return Color.black.opacity(0.58)
+        }
+    }
+
+    private var borderColor: Color {
+        switch style {
+        case .light:
+            return StockpilePalette.border.color.opacity(0.75)
+        case .dark:
+            return Color.white.opacity(0.22)
         }
     }
 }
@@ -1809,11 +2112,20 @@ private struct CaptureGuidedStateView: View {
     let restartAction: () -> Void
     let fallbackMovie: CaptureFallbackMovieState?
     let liveQuickEstimate: CaptureLiveQuickVolumeReadout?
+    let materialOptions: [CaptureMaterialOption]
+    let selectedMaterial: CaptureMaterialOption
+    let selectMaterial: (CaptureMaterialOption) -> Void
+    let pileSizeOptions: [CapturePileSizeMode]
+    let selectedPileSizeMode: CapturePileSizeMode
+    let selectPileSizeMode: (CapturePileSizeMode) -> Void
+    #if canImport(ARKit)
+    var arSession: ARSession? = nil
+    #endif
 
     var body: some View {
         GeometryReader { geometry in
             ZStack(alignment: .bottom) {
-                CaptureFieldPreviewSurface(preview: preview)
+                previewSurface
                     .frame(maxWidth: .infinity, maxHeight: .infinity)
                     .ignoresSafeArea(edges: .top)
 
@@ -1824,10 +2136,19 @@ private struct CaptureGuidedStateView: View {
                         preview: preview,
                         cameraState: cameraState,
                         content: content,
-                        sceneIntelligence: sceneIntelligence
+                        sceneIntelligence: sceneIntelligence,
+                        materialOptions: materialOptions,
+                        selectedMaterial: selectedMaterial,
+                        selectMaterial: selectMaterial,
+                        pileSizeOptions: pileSizeOptions,
+                        selectedPileSizeMode: selectedPileSizeMode,
+                        selectPileSizeMode: selectPileSizeMode
                     )
                     .padding(.horizontal, StockpileSpacing.medium)
                     .padding(.top, StockpileSpacing.small)
+
+                    CaptureWalkProgressOverlayCard(content: content)
+                        .padding(.horizontal, StockpileSpacing.medium)
 
                     if let liveQuickEstimate {
                         CaptureLiveVolumeOverlayCard(readout: liveQuickEstimate)
@@ -1860,6 +2181,15 @@ private struct CaptureGuidedStateView: View {
         }
     }
 
+    @ViewBuilder
+    private var previewSurface: some View {
+        #if canImport(ARKit)
+        CaptureFieldPreviewSurface(preview: preview, arSession: arSession)
+        #else
+        CaptureFieldPreviewSurface(preview: preview)
+        #endif
+    }
+
     private func bottomPanelHorizontalPadding(for width: CGFloat) -> CGFloat {
         width < 390 ? StockpileSpacing.small : StockpileSpacing.medium
     }
@@ -1875,18 +2205,50 @@ private struct CaptureGuidedStateView: View {
 
 private struct CaptureFieldPreviewSurface: View {
     let preview: CaptureGuidedPreviewState
+    #if canImport(ARKit)
+    var arSession: ARSession? = nil
+    #endif
 
     var body: some View {
-        Group {
+        ZStack {
+            #if canImport(ARKit) && canImport(StockpileMobileFirstCapture)
+            if let arSession {
+                StockpileLiDARMeshARView(arSession: arSession)
+                    .overlay(alignment: .topLeading) {
+                        CaptureMeshCaptureBadge()
+                            .padding(StockpileSpacing.medium)
+                    }
+            } else if let captureSession = preview.captureSession, preview.showsLivePreview {
+                CaptureLiveCameraPreviewRepresentable(captureSession: captureSession)
+            } else {
+                CaptureLivePreviewUnavailableSurface(preview: preview)
+            }
+            #else
             if let captureSession = preview.captureSession, preview.showsLivePreview {
                 CaptureLiveCameraPreviewRepresentable(captureSession: captureSession)
             } else {
                 CaptureLivePreviewUnavailableSurface(preview: preview)
             }
+            #endif
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity)
         .background(Color.black)
         .clipped()
+    }
+}
+
+private struct CaptureMeshCaptureBadge: View {
+    var body: some View {
+        Label("Mapping area", systemImage: "viewfinder")
+            .font(StockpileTypography.caption.font.weight(.semibold))
+            .foregroundStyle(Color.white)
+            .padding(.horizontal, StockpileSpacing.small)
+            .padding(.vertical, StockpileSpacing.xxSmall)
+            .background(Color.black.opacity(0.58), in: Capsule())
+            .overlay(
+                Capsule()
+                    .stroke(Color.white.opacity(0.28), lineWidth: 1)
+            )
     }
 }
 
@@ -1911,6 +2273,12 @@ private struct CaptureFieldTopOverlay: View {
     let cameraState: StockpileCameraCaptureSessionState?
     let content: GuidedCaptureContent
     let sceneIntelligence: CaptureFeatureSceneIntelligence
+    let materialOptions: [CaptureMaterialOption]
+    let selectedMaterial: CaptureMaterialOption
+    let selectMaterial: (CaptureMaterialOption) -> Void
+    let pileSizeOptions: [CapturePileSizeMode]
+    let selectedPileSizeMode: CapturePileSizeMode
+    let selectPileSizeMode: (CapturePileSizeMode) -> Void
 
     var body: some View {
         HStack(spacing: StockpileSpacing.small) {
@@ -1930,11 +2298,27 @@ private struct CaptureFieldTopOverlay: View {
                 )
 
             Spacer(minLength: 0)
+
+            HStack(spacing: StockpileSpacing.xxSmall) {
+                CaptureTopPileSizeMenu(
+                    options: pileSizeOptions,
+                    selectedMode: selectedPileSizeMode,
+                    selectMode: selectPileSizeMode,
+                    style: .dark
+                )
+
+                CaptureTopMaterialMenu(
+                    options: materialOptions,
+                    selectedMaterial: selectedMaterial,
+                    selectMaterial: selectMaterial,
+                    style: .dark
+                )
+            }
         }
     }
 
     private var statusLabel: String {
-        guard preview.showsLivePreview else {
+        guard isCaptureSurfaceLive else {
             return preview.badgeLabel
         }
 
@@ -1968,7 +2352,7 @@ private struct CaptureFieldTopOverlay: View {
     }
 
     private var tone: StockpileStatusTone {
-        guard preview.showsLivePreview else {
+        guard isCaptureSurfaceLive else {
             return preview.tone
         }
 
@@ -1991,7 +2375,7 @@ private struct CaptureFieldTopOverlay: View {
     }
 
     private var systemImage: String {
-        guard preview.showsLivePreview else {
+        guard isCaptureSurfaceLive else {
             return preview.systemImage
         }
 
@@ -2017,6 +2401,19 @@ private struct CaptureFieldTopOverlay: View {
             return "camera.aperture"
         default:
             return preview.systemImage
+        }
+    }
+
+    private var isCaptureSurfaceLive: Bool {
+        if preview.showsLivePreview {
+            return true
+        }
+
+        switch cameraState?.operatorStage {
+        case .recordingLive, .readyToFinish, .recordingSaved:
+            return true
+        default:
+            return false
         }
     }
 }
@@ -2065,6 +2462,8 @@ private struct CaptureGuidedBottomPanel: View {
                 Spacer(minLength: 0)
             }
 
+            CaptureWalkProgressInlineBar(content: content)
+
             actionButtons
         }
         .padding(.horizontal, StockpileSpacing.medium)
@@ -2081,7 +2480,7 @@ private struct CaptureGuidedBottomPanel: View {
     }
 
     private var panelEyebrow: String {
-        guard preview.showsLivePreview else {
+        guard isCaptureSurfaceLive else {
             return "Camera status"
         }
 
@@ -2102,7 +2501,7 @@ private struct CaptureGuidedBottomPanel: View {
     }
 
     private var panelHeadline: String {
-        guard preview.showsLivePreview else {
+        guard isCaptureSurfaceLive else {
             return preview.title
         }
 
@@ -2131,7 +2530,7 @@ private struct CaptureGuidedBottomPanel: View {
     }
 
     private var panelBadgeLabel: String {
-        guard preview.showsLivePreview else {
+        guard isCaptureSurfaceLive else {
             return preview.badgeLabel
         }
 
@@ -2167,7 +2566,7 @@ private struct CaptureGuidedBottomPanel: View {
     }
 
     private var panelTone: StockpileStatusTone {
-        guard preview.showsLivePreview else {
+        guard isCaptureSurfaceLive else {
             return preview.tone
         }
 
@@ -2196,7 +2595,7 @@ private struct CaptureGuidedBottomPanel: View {
     }
 
     private var panelMessage: String {
-        guard preview.showsLivePreview else {
+        guard isCaptureSurfaceLive else {
             return preview.message
         }
 
@@ -2216,7 +2615,7 @@ private struct CaptureGuidedBottomPanel: View {
     }
 
     private var panelSystemImage: String {
-        guard preview.showsLivePreview else {
+        guard isCaptureSurfaceLive else {
             return preview.systemImage
         }
 
@@ -2237,6 +2636,19 @@ private struct CaptureGuidedBottomPanel: View {
         }
 
         return "dot.radiowaves.left.and.right"
+    }
+
+    private var isCaptureSurfaceLive: Bool {
+        if preview.showsLivePreview {
+            return true
+        }
+
+        switch cameraState?.operatorStage {
+        case .recordingLive, .readyToFinish, .recordingSaved:
+            return true
+        default:
+            return false
+        }
     }
 
     @ViewBuilder
@@ -2341,6 +2753,14 @@ private struct CaptureGuidedBottomPanel: View {
                     isDisabled: false
                 )
             case .idle, .recordingLive:
+                if canSealFromWalkProgress {
+                    return CaptureActionConfiguration(
+                        title: "Finish and seal",
+                        systemImage: "checkmark.circle.fill",
+                        action: primaryAction,
+                        isDisabled: false
+                    )
+                }
                 return CaptureActionConfiguration(
                     title: "Keep recording",
                     systemImage: "record.circle.fill",
@@ -2369,10 +2789,15 @@ private struct CaptureGuidedBottomPanel: View {
         case .openingCamera:
             return true
         case .recordingLive:
-            return false
+            return canSealFromWalkProgress
         case .idle, .finalizingRecording:
             return false
         }
+    }
+
+    private var canSealFromWalkProgress: Bool {
+        content.perimeterCoverage >= 0.95
+            && content.captureChecks.contains { $0.status == .blocked } == false
     }
 
     private var showsRestartAction: Bool {
@@ -3447,6 +3872,126 @@ private struct CaptureLiveVolumeReadoutCard: View {
             RoundedRectangle(cornerRadius: 22, style: .continuous)
                 .stroke(StockpilePalette.border.color.opacity(0.55), lineWidth: 1)
         )
+    }
+}
+
+private struct CaptureWalkProgressOverlayCard: View {
+    let content: GuidedCaptureContent
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: StockpileSpacing.xSmall) {
+            HStack(spacing: StockpileSpacing.xSmall) {
+                Image(systemName: content.isReadyToFinish ? "checkmark.circle.fill" : "figure.walk")
+                    .font(.system(size: 13, weight: .semibold, design: .rounded))
+                    .foregroundStyle(tone.theme.accent.color)
+
+                Text("Walk progress")
+                    .font(StockpileTypography.caption.font.weight(.semibold))
+                    .foregroundStyle(Color.white.opacity(0.92))
+
+                Spacer(minLength: 0)
+
+                Text("\(progressPercent)%")
+                    .font(StockpileTypography.caption.font.weight(.bold))
+                    .foregroundStyle(tone.theme.accent.color)
+                    .contentTransition(.numericText())
+            }
+
+            CaptureProgressBar(
+                progress: progress,
+                fill: tone.theme.accent.color,
+                track: Color.white.opacity(0.18)
+            )
+        }
+        .padding(.horizontal, StockpileSpacing.medium)
+        .padding(.vertical, StockpileSpacing.small)
+        .background(
+            Color.black.opacity(0.42),
+            in: RoundedRectangle(cornerRadius: 18, style: .continuous)
+        )
+        .overlay(
+            RoundedRectangle(cornerRadius: 18, style: .continuous)
+                .stroke(Color.white.opacity(0.12), lineWidth: 1)
+        )
+    }
+
+    private var progress: Double {
+        content.isReadyToFinish ? 1 : min(max(content.perimeterCoverage, 0), 1)
+    }
+
+    private var progressPercent: Int {
+        Int((progress * 100).rounded())
+    }
+
+    private var tone: StockpileStatusTone {
+        if content.isReadyToFinish {
+            return .success
+        }
+        if content.perimeterCoverage >= 0.55 && content.stabilityScore >= 0.55 {
+            return .info
+        }
+        return .caution
+    }
+}
+
+private struct CaptureWalkProgressInlineBar: View {
+    let content: GuidedCaptureContent
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: StockpileSpacing.xxSmall) {
+            HStack {
+                Text("Lap coverage")
+                    .font(StockpileTypography.caption.font.weight(.semibold))
+                    .foregroundStyle(StockpilePalette.mutedInk.color)
+
+                Spacer(minLength: 0)
+
+                Text("\(progressPercent)%")
+                    .font(StockpileTypography.caption.font.weight(.bold))
+                    .foregroundStyle(tone.theme.accent.color)
+                    .contentTransition(.numericText())
+            }
+
+            CaptureProgressBar(
+                progress: progress,
+                fill: tone.theme.accent.color,
+                track: StockpilePalette.border.color.opacity(0.55)
+            )
+        }
+    }
+
+    private var progress: Double {
+        content.isReadyToFinish ? 1 : min(max(content.perimeterCoverage, 0), 1)
+    }
+
+    private var progressPercent: Int {
+        Int((progress * 100).rounded())
+    }
+
+    private var tone: StockpileStatusTone {
+        content.isReadyToFinish ? .success : .info
+    }
+}
+
+private struct CaptureProgressBar: View {
+    let progress: Double
+    let fill: Color
+    let track: Color
+
+    var body: some View {
+        GeometryReader { geometry in
+            let clamped = min(max(progress, 0), 1)
+            ZStack(alignment: .leading) {
+                Capsule()
+                    .fill(track)
+
+                Capsule()
+                    .fill(fill)
+                    .frame(width: max(geometry.size.width * clamped, 3))
+            }
+        }
+        .frame(height: 7)
+        .animation(.easeInOut(duration: 0.2), value: progress)
     }
 }
 

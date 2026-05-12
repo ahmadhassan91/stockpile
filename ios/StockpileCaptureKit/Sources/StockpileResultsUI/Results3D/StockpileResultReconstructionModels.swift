@@ -38,7 +38,7 @@ public enum StockpileResultViewerMode: String, Codable, CaseIterable, Sendable {
         case .all:
             return "Compare all inspection signals"
         case .threeD:
-            return "Confirm the overall pile shape"
+            return "Inspect estimated pile shape"
         }
     }
 
@@ -53,7 +53,7 @@ public enum StockpileResultViewerMode: String, Codable, CaseIterable, Sendable {
         case .all:
             return "Overlay toe and surface signals together so you can compare geometry with attention points."
         case .threeD:
-            return "Review the reconstructed form first to spot obvious lean, gaps, or unsupported shape."
+            return "Use this simplified shape preview to spot obvious lean, gaps, or unsupported geometry."
         }
     }
 
@@ -109,7 +109,7 @@ public enum StockpileResultViewerMode: String, Codable, CaseIterable, Sendable {
         case .all:
             return "Attention"
         case .threeD:
-            return "Sample points"
+            return "Preview points"
         }
     }
 
@@ -139,7 +139,7 @@ public enum StockpileResultViewerMode: String, Codable, CaseIterable, Sendable {
         case .all:
             return "toe + surface checks"
         case .threeD:
-            return "points supporting mesh"
+            return "simplified display mesh"
         }
     }
 }

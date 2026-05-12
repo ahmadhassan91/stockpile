@@ -8,6 +8,7 @@ import pytest
 
 from stockpile_lidar.config import GroundPlaneConfig
 from stockpile_lidar.segmentation import segment_pile
+from stockpile_lidar.segmentation.ground_plane import _resolve_ground_z
 
 
 def _make_pcd(points: np.ndarray) -> o3d.geometry.PointCloud:
@@ -74,6 +75,32 @@ def test_segment_pile_with_anchor_prior_lands_ground_near_zero():
     ground_pts = np.asarray(result.ground_cloud.points)
     # Ground points should be clustered tightly around z=0 after the shift.
     assert abs(float(np.median(ground_pts[:, 2]))) < 0.1
+
+
+def test_segment_pile_uses_two_arkit_ground_anchors_as_height_prior():
+    rng = np.random.default_rng(19)
+    points = _synthetic_scene(rng)
+    # Shift the scene upward to mimic ARKit world coordinates where detected
+    # plane anchors are the best available ground reference.
+    points[:, 2] += 0.4
+    pcd = _make_pcd(points)
+    anchors = [
+        np.array([2.0, 2.0, 0.4]),
+        np.array([-2.0, 2.0, 0.4]),
+    ]
+
+    result = segment_pile(pcd, GroundPlaneConfig(), ground_anchor_positions=anchors)
+
+    ground_pts = np.asarray(result.ground_cloud.points)
+    assert abs(float(np.median(ground_pts[:, 2]))) < 0.1
+
+
+def test_ransac_ground_z_is_kept_when_anchor_disagrees_strongly():
+    assert _resolve_ground_z(
+        ransac_ground_z=-1.2,
+        anchor_ground_z=0.1,
+        config=GroundPlaneConfig(),
+    ) == pytest.approx(-1.2)
 
 
 def test_segment_pile_with_anchors_none_works():

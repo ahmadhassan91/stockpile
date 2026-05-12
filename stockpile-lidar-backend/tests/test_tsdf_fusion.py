@@ -78,6 +78,8 @@ def _build_bundle_zip(
     manifest = {
         "schema_version": 1,
         "capture_id": "cap_fusion_test",
+        "material_code": "aggregate",
+        "density_kg_per_m3": 1600,
         "frame_count": frame_count,
         "depth_dtype": "float16",
         "rgb": {"width": rgb_w, "height": rgb_h},
@@ -244,6 +246,8 @@ def test_empty_bundle_returns_empty_cloud(tmp_path):
         manifest={
             "schema_version": 1,
             "frame_count": 0,
+            "material_code": "aggregate",
+            "density_kg_per_m3": 1600,
             "depth_dtype": "float16",
             "depth": {"width": _DEPTH_W, "height": _DEPTH_H},
             "rgb": {"width": _RGB_W, "height": _RGB_H},
@@ -251,6 +255,7 @@ def test_empty_bundle_returns_empty_cloud(tmp_path):
         poses=[],
         rgb_frames=[],
         depth_frames=[],
+        validation_warnings=[],
     )
 
     result = fuse_capture_bundle(bundle)

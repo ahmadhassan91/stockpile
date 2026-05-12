@@ -2,40 +2,60 @@ import Foundation
 
 public struct StockpileCaptureBundleManifestBuilder: Sendable {
     public let captureID: String
+    public let siteID: String?
+    public let materialCode: String
+    public let densityKgPerM3: Int
+    public let pileSizeMode: String?
     public let createdAt: Date
     public let device: StockpileCaptureBundleDeviceMetadata
     public let frameIndex: [StockpileCaptureBundleFrameIndexEntry]
     public let trackingSummary: StockpileCaptureBundleTrackingSummary
     public let groundAnchorID: String
     public let onDeviceQuickEstimate: StockpileCaptureBundleQuickEstimate?
+    public let visionMaterialSuggestion: StockpileCaptureBundleVisionMaterialSuggestion?
 
     public init(
         captureID: String,
+        siteID: String? = nil,
+        materialCode: String,
+        densityKgPerM3: Int,
+        pileSizeMode: String? = nil,
         createdAt: Date,
         device: StockpileCaptureBundleDeviceMetadata,
         frameIndex: [StockpileCaptureBundleFrameIndexEntry],
         trackingSummary: StockpileCaptureBundleTrackingSummary,
         groundAnchorID: String,
-        onDeviceQuickEstimate: StockpileCaptureBundleQuickEstimate? = nil
+        onDeviceQuickEstimate: StockpileCaptureBundleQuickEstimate? = nil,
+        visionMaterialSuggestion: StockpileCaptureBundleVisionMaterialSuggestion? = nil
     ) {
         self.captureID = captureID
+        self.siteID = siteID
+        self.materialCode = materialCode
+        self.densityKgPerM3 = densityKgPerM3
+        self.pileSizeMode = pileSizeMode
         self.createdAt = createdAt
         self.device = device
         self.frameIndex = frameIndex
         self.trackingSummary = trackingSummary
         self.groundAnchorID = groundAnchorID
         self.onDeviceQuickEstimate = onDeviceQuickEstimate
+        self.visionMaterialSuggestion = visionMaterialSuggestion
     }
 
     public func build() -> StockpileCaptureBundleManifest {
         StockpileCaptureBundleManifest(
             captureID: captureID,
+            siteID: siteID,
+            materialCode: materialCode,
+            densityKgPerM3: densityKgPerM3,
+            pileSizeMode: pileSizeMode,
             createdAt: createdAt,
             device: device,
             frameIndex: frameIndex,
             trackingSummary: trackingSummary,
             groundAnchorID: groundAnchorID,
-            onDeviceQuickEstimate: onDeviceQuickEstimate
+            onDeviceQuickEstimate: onDeviceQuickEstimate,
+            visionMaterialSuggestion: visionMaterialSuggestion
         )
     }
 }

@@ -15,12 +15,12 @@ settings:
     PRODUCT_BUNDLE_IDENTIFIER: $(STOCKPILE_PRODUCT_BUNDLE_IDENTIFIER)
     # Keep signing automatic and repo-safe. Inject a real team locally or in CI before
     # archiving for TestFlight; do not commit team IDs or provisioning secrets here.
-    STOCKPILE_DEVELOPMENT_TEAM: ""
+    STOCKPILE_DEVELOPMENT_TEAM: "4ZRQ8D9UFG"
     DEVELOPMENT_TEAM: $(STOCKPILE_DEVELOPMENT_TEAM)
     CODE_SIGN_STYLE: Automatic
     VERSIONING_SYSTEM: apple-generic
-    STOCKPILE_BUILD_NUMBER: 1
-    CURRENT_PROJECT_VERSION: $(STOCKPILE_BUILD_NUMBER)
+    STOCKPILE_BUILD_NUMBER: 2026051201
+    CURRENT_PROJECT_VERSION: "$(STOCKPILE_BUILD_NUMBER)"
     STOCKPILE_MARKETING_VERSION: 0.1.0
     MARKETING_VERSION: $(STOCKPILE_MARKETING_VERSION)
     GENERATE_INFOPLIST_FILE: YES
@@ -31,6 +31,7 @@ settings:
     INFOPLIST_KEY_UIApplicationSceneManifest_Generation: YES
     INFOPLIST_KEY_UILaunchScreen_Generation: YES
     INFOPLIST_KEY_UIStatusBarStyle: UIStatusBarStyleDefault
+    INFOPLIST_KEY_UISupportedInterfaceOrientations: "UIInterfaceOrientationPortrait UIInterfaceOrientationPortraitUpsideDown UIInterfaceOrientationLandscapeLeft UIInterfaceOrientationLandscapeRight"
     INFOPLIST_KEY_NSLocationWhenInUseUsageDescription: Stockpile Capture uses location to tag capture sessions to the correct site.
     INFOPLIST_KEY_NSCameraUsageDescription: Stockpile Capture records guided stockpile walkarounds for measurement processing.
     INFOPLIST_KEY_NSMotionUsageDescription: Stockpile Capture uses motion sensors to check capture stability and guide the stockpile walkaround.
@@ -75,6 +76,7 @@ targets:
         ASSETCATALOG_COMPILER_APPICON_NAME: AppIcon
         STOCKPILE_ENVIRONMENT: Staging
         STOCKPILE_API_BASE_URL: https://stockpile.theclustox.com/api/mobile
+        STOCKPILE_CAPTURE_BUNDLE_SUBMISSION_URL: https://stockpile.theclustox.com/api/v2/captures
         STOCKPILE_LAUNCH_MODE: operational
         STOCKPILE_USE_LIVE_CAMERA: YES
         STOCKPILE_USE_MOCK_RESULTS: NO
@@ -89,6 +91,7 @@ targets:
         STOCKPILE_API_AUTH_HEADER_VALUE: ""
         INFOPLIST_KEY_STOCKPILE_ENVIRONMENT: $(STOCKPILE_ENVIRONMENT)
         INFOPLIST_KEY_STOCKPILE_API_BASE_URL: $(STOCKPILE_API_BASE_URL)
+        INFOPLIST_KEY_STOCKPILE_CAPTURE_BUNDLE_SUBMISSION_URL: $(STOCKPILE_CAPTURE_BUNDLE_SUBMISSION_URL)
         INFOPLIST_KEY_STOCKPILE_LAUNCH_MODE: $(STOCKPILE_LAUNCH_MODE)
         INFOPLIST_KEY_STOCKPILE_USE_LIVE_CAMERA: $(STOCKPILE_USE_LIVE_CAMERA)
         INFOPLIST_KEY_STOCKPILE_USE_MOCK_RESULTS: $(STOCKPILE_USE_MOCK_RESULTS)
@@ -114,10 +117,12 @@ targets:
         Debug:
           STOCKPILE_ENVIRONMENT: Staging
           STOCKPILE_API_BASE_URL: https://stockpile.theclustox.com/api/mobile
+          STOCKPILE_CAPTURE_BUNDLE_SUBMISSION_URL: https://stockpile.theclustox.com/api/v2/captures
           STOCKPILE_UPLOAD_BACKGROUND_SESSION_ID: com.clustox.stockpile.capture.upload.debug
         Release:
           STOCKPILE_ENVIRONMENT: Staging
           STOCKPILE_API_BASE_URL: https://stockpile.theclustox.com/api/mobile
+          STOCKPILE_CAPTURE_BUNDLE_SUBMISSION_URL: https://stockpile.theclustox.com/api/v2/captures
           STOCKPILE_API_TIMEOUT_SECONDS: 45
           STOCKPILE_UPLOAD_BACKGROUND_SESSION_ID: com.clustox.stockpile.capture.upload
           DEBUG_INFORMATION_FORMAT: dwarf-with-dsym

@@ -19,24 +19,45 @@ import UniformTypeIdentifiers
 /// Configuration for an in-progress markerless capture bundle recording.
 struct StockpileCaptureBundleRecorderConfiguration {
     let captureID: String
+    let siteID: String?
+    let materialCode: String
+    let densityKgPerM3: Int
+    let pileSizeMode: String?
     let baseDirectory: URL
     let targetFrameRateHz: Double
     let jpegQuality: CGFloat
+    let rgbMaxDimension: CGFloat
+    let maxPersistedFrameCount: Int
     let preferSmoothedDepth: Bool
     let device: StockpileCaptureBundleDeviceMetadata
 
     init(
         captureID: String,
+        siteID: String? = nil,
+        materialCode: String,
+        densityKgPerM3: Int,
+        pileSizeMode: String? = nil,
         baseDirectory: URL = FileManager.default.temporaryDirectory,
-        targetFrameRateHz: Double = 5,
-        jpegQuality: CGFloat = 0.85,
+        targetFrameRateHz: Double = 2,
+        jpegQuality: CGFloat = 0.55,
+        rgbMaxDimension: CGFloat = 960,
+        maxPersistedFrameCount: Int = 160,
         preferSmoothedDepth: Bool = true,
         device: StockpileCaptureBundleDeviceMetadata
     ) {
         self.captureID = captureID
+        let trimmedSiteID = siteID?.trimmingCharacters(in: .whitespacesAndNewlines)
+        self.siteID = trimmedSiteID?.isEmpty == false ? trimmedSiteID : nil
+        let trimmedMaterialCode = materialCode.trimmingCharacters(in: .whitespacesAndNewlines)
+        self.materialCode = trimmedMaterialCode.lowercased()
+        self.densityKgPerM3 = densityKgPerM3
+        let trimmedPileSizeMode = pileSizeMode?.trimmingCharacters(in: .whitespacesAndNewlines)
+        self.pileSizeMode = trimmedPileSizeMode?.isEmpty == false ? trimmedPileSizeMode?.lowercased() : nil
         self.baseDirectory = baseDirectory
         self.targetFrameRateHz = max(1, min(targetFrameRateHz, 30))
         self.jpegQuality = max(0.1, min(jpegQuality, 1.0))
+        self.rgbMaxDimension = max(320, min(rgbMaxDimension, 1920))
+        self.maxPersistedFrameCount = max(30, min(maxPersistedFrameCount, 600))
         self.preferSmoothedDepth = preferSmoothedDepth
         self.device = device
     }
@@ -115,6 +136,9 @@ final class StockpileCaptureBundleRecorder: @unchecked Sendable {
     /// throttle rate. Uses the ARKit frame timestamp directly so the recorder does
     /// not depend on wall clock or display sync.
     func shouldPersist(frameTimestamp: TimeInterval) -> Bool {
+        guard frameCount < configuration.maxPersistedFrameCount else {
+            return false
+        }
         guard let last = lastPersistedFrameTimestamp else {
             return true
         }
@@ -169,15 +193,19 @@ final class StockpileCaptureBundleRecorder: @unchecked Sendable {
         // 2. Persist RGB JPEG.
         let rgbRelativePath = "rgb/\(zeroPaddedID).jpg"
         let rgbURL = stagingDirectoryURL.appendingPathComponent(rgbRelativePath)
-        let rgbWidth = CVPixelBufferGetWidth(capturedImage)
-        let rgbHeight = CVPixelBufferGetHeight(capturedImage)
+        var rgbWidth = CVPixelBufferGetWidth(capturedImage)
+        var rgbHeight = CVPixelBufferGetHeight(capturedImage)
         let rgbBytes: Int64
         do {
-            rgbBytes = try writeJPEG(
+            let encodedRGB = try writeJPEG(
                 pixelBuffer: capturedImage,
                 to: rgbURL,
-                quality: configuration.jpegQuality
+                quality: configuration.jpegQuality,
+                maxDimension: configuration.rgbMaxDimension
             )
+            rgbBytes = encodedRGB.byteSize
+            rgbWidth = encodedRGB.width
+            rgbHeight = encodedRGB.height
         } catch let error as RecorderError {
             droppedFrameCount += 1
             throw error
@@ -341,6 +369,10 @@ final class StockpileCaptureBundleRecorder: @unchecked Sendable {
 
         let manifest = StockpileCaptureBundleManifestBuilder(
             captureID: configuration.captureID,
+            siteID: configuration.siteID,
+            materialCode: configuration.materialCode,
+            densityKgPerM3: configuration.densityKgPerM3,
+            pileSizeMode: configuration.pileSizeMode,
             createdAt: startedAt,
             device: configuration.device,
             frameIndex: frameIndex,
@@ -370,28 +402,37 @@ final class StockpileCaptureBundleRecorder: @unchecked Sendable {
     private func writeJPEG(
         pixelBuffer: CVPixelBuffer,
         to url: URL,
-        quality: CGFloat
-    ) throws -> Int64 {
-        let ciImage = CIImage(cvPixelBuffer: pixelBuffer)
+        quality: CGFloat,
+        maxDimension: CGFloat
+    ) throws -> (byteSize: Int64, width: Int, height: Int) {
+        let sourceImage = CIImage(cvPixelBuffer: pixelBuffer)
+        let sourceExtent = sourceImage.extent
+        let sourceMaxDimension = max(sourceExtent.width, sourceExtent.height)
+        let scale = sourceMaxDimension > maxDimension ? maxDimension / sourceMaxDimension : 1
+        let ciImage = scale < 1
+            ? sourceImage.transformed(by: CGAffineTransform(scaleX: scale, y: scale))
+            : sourceImage
+        let encodedExtent = ciImage.extent.integral
         let colorSpace = CGColorSpace(name: CGColorSpace.sRGB) ?? CGColorSpaceCreateDeviceRGB()
         let options: [CIImageRepresentationOption: Any] = [
             CIImageRepresentationOption(rawValue: kCGImageDestinationLossyCompressionQuality as String): quality,
         ]
-        let data: Data
-        do {
-            data = try ciContext.jpegRepresentation(
-                of: ciImage,
-                colorSpace: colorSpace,
-                options: options
-            )
-        } catch {
-            throw RecorderError.rgbEncodingFailed(error.localizedDescription)
+        guard let data = ciContext.jpegRepresentation(
+            of: ciImage,
+            colorSpace: colorSpace,
+            options: options
+        ) else {
+            throw RecorderError.rgbEncodingFailed("Encoder returned a nil JPEG payload.")
         }
         guard data.isEmpty == false else {
             throw RecorderError.rgbEncodingFailed("Encoder returned an empty JPEG payload.")
         }
         try writeData(data, to: url)
-        return Int64(data.count)
+        return (
+            byteSize: Int64(data.count),
+            width: Int(encodedExtent.width),
+            height: Int(encodedExtent.height)
+        )
     }
 
     private func depthRangeMeters(from depthMap: CVPixelBuffer) -> (Double, Double) {
@@ -436,17 +477,22 @@ extension StockpileCaptureBundleDeviceMetadata {
         captureKitVersion: String? = nil
     ) -> StockpileCaptureBundleDeviceMetadata {
         #if canImport(UIKit)
-        let device = UIDevice.current
-        let osVersion = ProcessInfo.processInfo.operatingSystemVersionString
-        return StockpileCaptureBundleDeviceMetadata(
-            manufacturer: "Apple",
-            modelIdentifier: device.model,
-            operatingSystem: device.systemName,
-            operatingSystemVersion: osVersion,
-            appVersion: appVersion,
-            captureKitVersion: captureKitVersion,
-            supportsLiDAR: false
-        )
+        // UIDevice properties are @MainActor-isolated in the iOS 26 SDK.
+        // This helper is always called from UI-driven capture flow (main thread),
+        // so assumeIsolated is safe and avoids making the signature @MainActor.
+        return MainActor.assumeIsolated {
+            let device = UIDevice.current
+            let osVersion = ProcessInfo.processInfo.operatingSystemVersionString
+            return StockpileCaptureBundleDeviceMetadata(
+                manufacturer: "Apple",
+                modelIdentifier: device.model,
+                operatingSystem: device.systemName,
+                operatingSystemVersion: osVersion,
+                appVersion: appVersion,
+                captureKitVersion: captureKitVersion,
+                supportsLiDAR: Self.currentDeviceSupportsLiDAR
+            )
+        }
         #else
         return StockpileCaptureBundleDeviceMetadata(
             manufacturer: "Apple",
@@ -458,6 +504,13 @@ extension StockpileCaptureBundleDeviceMetadata {
             supportsLiDAR: false
         )
         #endif
+    }
+
+    private static var currentDeviceSupportsLiDAR: Bool {
+        ARWorldTrackingConfiguration.supportsFrameSemantics(.sceneDepth)
+            || ARWorldTrackingConfiguration.supportsFrameSemantics(.smoothedSceneDepth)
+            || ARWorldTrackingConfiguration.supportsSceneReconstruction(.mesh)
+            || ARWorldTrackingConfiguration.supportsSceneReconstruction(.meshWithClassification)
     }
 }
 

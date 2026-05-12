@@ -30,12 +30,17 @@ public final class StockpileARKitDevicePoseCaptureSession: NSObject, StockpileDe
         bundleLock.withLock { bundleSnapshot }
     }
 
+    /// Exposes the underlying ARSession so UI components such as the live mesh
+    /// overlay can share the session without spawning a competing one.
+    public var underlyingARSession: ARSession { session }
+
     public var onSnapshotUpdated: (@Sendable (StockpileDevicePoseCaptureSnapshot) -> Void)?
     public var onRecordingSnapshotUpdated: (@Sendable (StockpileARKitPrimaryRecordingSnapshot) -> Void)?
     public var onBundleSnapshotUpdated: (@Sendable (StockpileCaptureBundleRecordingSnapshot) -> Void)?
 
     /// When set to true, `start(configuration:)` will not honor `startRecording(to:)`
-    /// and will instead expect callers to use `startBundleRecording(captureID:)`.
+    /// and will instead expect callers to use `startBundleRecording(...)` with
+    /// an explicit operator-selected material and density.
     /// The legacy H.264 movie writer is left untouched for the `false` case.
     public var markerlessCaptureEnabled: Bool = false
 
@@ -90,6 +95,7 @@ public final class StockpileARKitDevicePoseCaptureSession: NSObject, StockpileDe
 
         let worldTrackingConfiguration = ARWorldTrackingConfiguration()
         worldTrackingConfiguration.worldAlignment = configuration.worldAlignment.arWorldAlignment
+        worldTrackingConfiguration.planeDetection.insert(.horizontal)
 
         if resolvedConfiguration.deliversDepth {
             let semantics: ARConfiguration.FrameSemantics = resolvedConfiguration.usesSmoothedDepth
@@ -99,7 +105,7 @@ public final class StockpileARKitDevicePoseCaptureSession: NSObject, StockpileDe
         }
 
         if resolvedConfiguration.deliversSceneMesh {
-            worldTrackingConfiguration.sceneReconstruction = .mesh
+            worldTrackingConfiguration.sceneReconstruction = .meshWithClassification
         }
 
         sampleCount = 0
@@ -301,8 +307,12 @@ public final class StockpileARKitDevicePoseCaptureSession: NSObject, StockpileDe
     /// `stopBundleRecording(...)` is invoked.
     public func startBundleRecording(
         captureID: String,
+        siteID: String? = nil,
+        materialCode: String,
+        densityKgPerM3: Int,
+        pileSizeMode: String? = nil,
         baseDirectory: URL = FileManager.default.temporaryDirectory,
-        targetFrameRateHz: Double = 5
+        targetFrameRateHz: Double = 2
     ) throws {
         guard latestSnapshot.status == .running || latestSnapshot.status == .preparing else {
             throw StockpileDevicePoseCaptureError.runtimeFailure(
@@ -316,9 +326,23 @@ public final class StockpileARKitDevicePoseCaptureSession: NSObject, StockpileDe
                 "Capture ID is required to start a markerless bundle recording."
             )
         }
+        guard StockpileCaptureBundleMaterialPreset.contains(code: materialCode) else {
+            throw StockpileDevicePoseCaptureError.configurationRejected(
+                "Select Sand, Gravel, Backfill, Aggregate, Soil, or Other before recording."
+            )
+        }
+        guard StockpileCaptureBundleMaterialPreset.densityIsInSaneBounds(densityKgPerM3) else {
+            throw StockpileDevicePoseCaptureError.configurationRejected(
+                "Selected material density must be between 300 and 3000 kg/m3."
+            )
+        }
 
         let configuration = StockpileCaptureBundleRecorderConfiguration(
             captureID: trimmedCaptureID,
+            siteID: siteID,
+            materialCode: materialCode,
+            densityKgPerM3: densityKgPerM3,
+            pileSizeMode: pileSizeMode,
             baseDirectory: baseDirectory,
             targetFrameRateHz: targetFrameRateHz,
             preferSmoothedDepth: latestSnapshot.resolvedConfiguration?.usesSmoothedDepth == true,
@@ -351,9 +375,9 @@ public final class StockpileARKitDevicePoseCaptureSession: NSObject, StockpileDe
     public func stopBundleRecording(
         completion: @escaping @Sendable (Result<StockpileCaptureBundleRecordingOutput, Error>) -> Void
     ) {
-        let recorder: StockpileCaptureBundleRecorder?
-        let archiveURL: URL?
-        let captureID: String?
+        var recorder: StockpileCaptureBundleRecorder?
+        var archiveURL: URL?
+        var captureID: String?
 
         let archivingSnapshot: StockpileCaptureBundleRecordingSnapshot? = bundleLock.withLock {
             switch bundleSnapshot.status {
@@ -468,7 +492,7 @@ public final class StockpileARKitDevicePoseCaptureSession: NSObject, StockpileDe
         frame: ARFrame,
         quickVolumeEstimate: StockpileDevicePoseQuickVolumeEstimate?
     ) {
-        let activeRecorder: StockpileCaptureBundleRecorder?
+        var activeRecorder: StockpileCaptureBundleRecorder?
         var preferSmoothed = false
         bundleLock.withLock {
             guard bundleSnapshot.status == .recording, let recorder = bundleRecorder else {
@@ -1434,6 +1458,26 @@ private extension StockpileDevicePoseWorldAlignment {
             return .gravity
         case .gravityAndHeading:
             return .gravityAndHeading
+        }
+    }
+}
+
+private extension StockpileCaptureBundleTrackingState {
+    init(_ trackingState: ARCamera.TrackingState) {
+        switch trackingState {
+        case .notAvailable:
+            self = .unavailable
+        case .normal:
+            self = .normal
+        case let .limited(reason):
+            switch reason {
+            case .relocalizing:
+                self = .relocalizing
+            default:
+                self = .limited
+            }
+        @unknown default:
+            self = .limited
         }
     }
 }

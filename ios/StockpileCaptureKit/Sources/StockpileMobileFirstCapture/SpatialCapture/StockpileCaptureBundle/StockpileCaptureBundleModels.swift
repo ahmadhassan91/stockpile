@@ -199,6 +199,15 @@ public struct StockpileCaptureBundleTrackingSummary: Codable, Equatable, Sendabl
         lostFrameCount: 0,
         averageTrackingConfidence: 0
     )
+
+    private enum CodingKeys: String, CodingKey {
+        case totalFrameCount = "total_frame_count"
+        case trackedFrameCount = "tracked_frame_count"
+        case limitedFrameCount = "limited_frame_count"
+        case lostFrameCount = "lost_frame_count"
+        case averageTrackingConfidence = "average_tracking_confidence"
+        case trackingRatio = "tracking_ratio"
+    }
 }
 
 public struct StockpileCaptureBundleQuickEstimate: Codable, Equatable, Sendable {
@@ -246,18 +255,83 @@ public struct StockpileCaptureBundleQuickEstimate: Codable, Equatable, Sendable 
     }
 }
 
+public enum StockpileCaptureBundleMaterialPreset: String, Codable, CaseIterable, Sendable {
+    case sand
+    case gravel
+    case backfill
+    case aggregate
+    case soil
+    case other
+
+    public static let minimumDensityKgPerM3 = 300
+    public static let maximumDensityKgPerM3 = 3_000
+
+    public var defaultDensityKgPerM3: Int {
+        switch self {
+        case .sand:
+            return 1_600
+        case .gravel:
+            return 1_700
+        case .backfill:
+            return 1_800
+        case .aggregate:
+            return 1_650
+        case .soil:
+            return 1_400
+        case .other:
+            return 1_600
+        }
+    }
+
+    public static func contains(code: String) -> Bool {
+        let normalizedCode = code.trimmedForCaptureBundle.lowercased()
+        return allCases.contains { $0.rawValue == normalizedCode }
+    }
+
+    public static func densityIsInSaneBounds(_ densityKgPerM3: Int) -> Bool {
+        (minimumDensityKgPerM3...maximumDensityKgPerM3).contains(densityKgPerM3)
+    }
+}
+
+public struct StockpileCaptureBundleVisionMaterialSuggestion: Codable, Equatable, Sendable {
+    public let suggestedMaterialCode: String
+    public let confidenceScore: Double
+    public let source: String
+
+    public init(
+        suggestedMaterialCode: String,
+        confidenceScore: Double,
+        source: String
+    ) {
+        self.suggestedMaterialCode = suggestedMaterialCode.trimmedForCaptureBundle
+        self.confidenceScore = confidenceScore.clampedCaptureBundleRatio
+        self.source = source.trimmedForCaptureBundle
+    }
+
+    private enum CodingKeys: String, CodingKey {
+        case suggestedMaterialCode = "suggested_material_code"
+        case confidenceScore = "confidence_score"
+        case source
+    }
+}
+
 public struct StockpileCaptureBundleManifest: Codable, Equatable, Sendable {
     public let schemaVersion: String
     public let manifestFileName: String
     public let posesFileName: String
     public let anchorsFileName: String
     public let captureID: String
+    public let siteID: String?
+    public let materialCode: String
+    public let densityKgPerM3: Int
+    public let pileSizeMode: String?
     public let createdAt: Date
     public let device: StockpileCaptureBundleDeviceMetadata
     public let frameIndex: [StockpileCaptureBundleFrameIndexEntry]
     public let trackingSummary: StockpileCaptureBundleTrackingSummary
     public let groundAnchorID: String
     public let onDeviceQuickEstimate: StockpileCaptureBundleQuickEstimate?
+    public let visionMaterialSuggestion: StockpileCaptureBundleVisionMaterialSuggestion?
 
     public init(
         schemaVersion: String = StockpileCaptureBundleContract.schemaVersion,
@@ -265,24 +339,36 @@ public struct StockpileCaptureBundleManifest: Codable, Equatable, Sendable {
         posesFileName: String = StockpileCaptureBundleContract.posesFileName,
         anchorsFileName: String = StockpileCaptureBundleContract.anchorsFileName,
         captureID: String,
+        siteID: String? = nil,
+        materialCode: String,
+        densityKgPerM3: Int,
+        pileSizeMode: String? = nil,
         createdAt: Date,
         device: StockpileCaptureBundleDeviceMetadata,
         frameIndex: [StockpileCaptureBundleFrameIndexEntry],
         trackingSummary: StockpileCaptureBundleTrackingSummary,
         groundAnchorID: String,
-        onDeviceQuickEstimate: StockpileCaptureBundleQuickEstimate? = nil
+        onDeviceQuickEstimate: StockpileCaptureBundleQuickEstimate? = nil,
+        visionMaterialSuggestion: StockpileCaptureBundleVisionMaterialSuggestion? = nil
     ) {
         self.schemaVersion = schemaVersion
         self.manifestFileName = manifestFileName
         self.posesFileName = posesFileName
         self.anchorsFileName = anchorsFileName
         self.captureID = captureID.trimmedForCaptureBundle
+        let trimmedSiteID = siteID?.trimmedForCaptureBundle
+        self.siteID = trimmedSiteID?.isEmpty == false ? trimmedSiteID : nil
+        self.materialCode = materialCode.trimmedForCaptureBundle.lowercased()
+        self.densityKgPerM3 = densityKgPerM3
+        let trimmedPileSizeMode = pileSizeMode?.trimmedForCaptureBundle.lowercased()
+        self.pileSizeMode = trimmedPileSizeMode?.isEmpty == false ? trimmedPileSizeMode : nil
         self.createdAt = createdAt
         self.device = device
         self.frameIndex = frameIndex
         self.trackingSummary = trackingSummary
         self.groundAnchorID = groundAnchorID.trimmedForCaptureBundle
         self.onDeviceQuickEstimate = onDeviceQuickEstimate
+        self.visionMaterialSuggestion = visionMaterialSuggestion
     }
 
     private enum CodingKeys: String, CodingKey {
@@ -291,12 +377,17 @@ public struct StockpileCaptureBundleManifest: Codable, Equatable, Sendable {
         case posesFileName = "poses_file"
         case anchorsFileName = "anchors_file"
         case captureID = "capture_id"
+        case siteID = "site_id"
+        case materialCode = "material_code"
+        case densityKgPerM3 = "density_kg_per_m3"
+        case pileSizeMode = "pile_size_mode"
         case createdAt = "created_at"
         case device
         case frameIndex = "frame_index"
         case trackingSummary = "tracking_summary"
         case groundAnchorID = "ground_anchor_id"
         case onDeviceQuickEstimate = "on_device_quick_estimate"
+        case visionMaterialSuggestion = "vision_material_suggestion"
     }
 }
 

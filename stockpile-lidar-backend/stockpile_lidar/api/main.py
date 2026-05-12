@@ -15,6 +15,7 @@ def create_app(settings: BackendSettings | None = None) -> FastAPI:
         title="Stockpile LiDAR Backend",
         version=resolved_settings.version,
     )
+    app.state.backend_settings = resolved_settings
 
     @app.get("/health", tags=["health"])
     async def health() -> dict[str, str]:

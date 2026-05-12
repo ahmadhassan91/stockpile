@@ -272,7 +272,7 @@ def segment_pile(
     ground_z = _find_ground_z_ransac(pts, config)
     logger.info("Ground Z level: %.3f (RANSAC on lowest 10%%)", ground_z)
 
-    if ground_anchor_positions and len(ground_anchor_positions) >= 3:
+    if ground_anchor_positions:
         anchor_zs = []
         for anchor_pos in ground_anchor_positions:
             anchor_h = np.append(np.asarray(anchor_pos, dtype=float), 1.0)

@@ -20,7 +20,8 @@ final class StockpileMarkerlessCaptureSubmissionCoordinatorTests: XCTestCase {
             archiveURL: URL(fileURLWithPath: "/tmp/bundle.stockpilecapture"),
             captureID: "cap_42",
             siteID: "site_north",
-            materialCode: "aggregate_5_14"
+            materialCode: "aggregate_5_14",
+            densityKgPerM3: 1650
         )
 
         let receipt = try await coordinator.submit(request)
@@ -31,6 +32,7 @@ final class StockpileMarkerlessCaptureSubmissionCoordinatorTests: XCTestCase {
         XCTAssertEqual(recordedCalls.first?.captureID, "cap_42")
         XCTAssertEqual(recordedCalls.first?.siteID, "site_north")
         XCTAssertEqual(recordedCalls.first?.materialCode, "aggregate_5_14")
+        XCTAssertEqual(recordedCalls.first?.densityKgPerM3, 1650)
 
         XCTAssertEqual(receipt.captureID, "cap_42")
         XCTAssertEqual(receipt.jobID, "job_42")
@@ -57,7 +59,8 @@ final class StockpileMarkerlessCaptureSubmissionCoordinatorTests: XCTestCase {
             archiveURL: URL(fileURLWithPath: "/tmp/bundle.stockpilecapture"),
             captureID: "cap_503",
             siteID: "site_a",
-            materialCode: "m"
+            materialCode: "m",
+            densityKgPerM3: 1700
         )
 
         do {
@@ -90,7 +93,8 @@ final class StockpileMarkerlessCaptureSubmissionCoordinatorTests: XCTestCase {
                 archiveURL: URL(fileURLWithPath: "/tmp/x.stockpilecapture"),
                 captureID: "x",
                 siteID: "s",
-                materialCode: "m"
+                materialCode: "m",
+                densityKgPerM3: 1700
             )
         )
 
@@ -119,7 +123,8 @@ final class StockpileMarkerlessCaptureSubmissionCoordinatorTests: XCTestCase {
             archiveURL: URL(fileURLWithPath: "/tmp/retry.stockpilecapture"),
             captureID: "cap_retry",
             siteID: "site",
-            materialCode: "m"
+            materialCode: "m",
+            densityKgPerM3: 1700
         )
 
         do {
@@ -163,7 +168,8 @@ final class StockpileMarkerlessCaptureSubmissionCoordinatorTests: XCTestCase {
             archiveURL: URL(fileURLWithPath: "/tmp/gate.stockpilecapture"),
             captureID: "cap_gate",
             siteID: "s",
-            materialCode: "m"
+            materialCode: "m",
+            densityKgPerM3: 1700
         )
 
         let submissionTask = Task {
@@ -209,6 +215,7 @@ private actor RecordingCaptureBundleSubmitter: StockpileCaptureBundleSubmitting 
         let captureID: String
         let siteID: String
         let materialCode: String
+        let densityKgPerM3: Int
     }
 
     enum Behaviour {
@@ -227,13 +234,17 @@ private actor RecordingCaptureBundleSubmitter: StockpileCaptureBundleSubmitting 
         at fileURL: URL,
         captureID: String,
         siteID: String,
-        materialCode: String
+        materialCode: String,
+        densityKgPerM3: Int,
+        pileSizeMode: String?
     ) async throws -> StockpileCaptureBundleSubmissionReceipt {
         try await record(
             archiveURL: fileURL,
             captureID: captureID,
             siteID: siteID,
-            materialCode: materialCode
+            materialCode: materialCode,
+            densityKgPerM3: densityKgPerM3,
+            pileSizeMode: pileSizeMode
         )
     }
 
@@ -241,14 +252,17 @@ private actor RecordingCaptureBundleSubmitter: StockpileCaptureBundleSubmitting 
         archiveURL: URL,
         captureID: String,
         siteID: String,
-        materialCode: String
+        materialCode: String,
+        densityKgPerM3: Int,
+        pileSizeMode: String?
     ) async throws -> StockpileCaptureBundleSubmissionReceipt {
         recordedCalls.append(
             Call(
                 archiveURL: archiveURL,
                 captureID: captureID,
                 siteID: siteID,
-                materialCode: materialCode
+                materialCode: materialCode,
+                densityKgPerM3: densityKgPerM3
             )
         )
         switch behaviour {
@@ -279,7 +293,9 @@ private actor ToggleableSubmitter: StockpileCaptureBundleSubmitting {
         at fileURL: URL,
         captureID: String,
         siteID: String,
-        materialCode: String
+        materialCode: String,
+        densityKgPerM3: Int,
+        pileSizeMode: String?
     ) async throws -> StockpileCaptureBundleSubmissionReceipt {
         try await next()
     }
@@ -303,7 +319,9 @@ private actor ContinuationSubmitter: StockpileCaptureBundleSubmitting {
         at fileURL: URL,
         captureID: String,
         siteID: String,
-        materialCode: String
+        materialCode: String,
+        densityKgPerM3: Int,
+        pileSizeMode: String?
     ) async throws -> StockpileCaptureBundleSubmissionReceipt {
         try await register()
     }

@@ -43,7 +43,9 @@ final class StockpileCaptureBundleSubmissionTests: XCTestCase {
             boundary: "B",
             captureID: "cap123",
             siteID: "site9",
-            materialCode: "aggregate_5_14"
+            materialCode: "aggregate_5_14",
+            densityKgPerM3: 1650,
+            pileSizeMode: "small"
         )
         XCTAssertEqual(request.url, endpoint)
         XCTAssertEqual(request.httpMethod, "POST")
@@ -67,6 +69,14 @@ final class StockpileCaptureBundleSubmissionTests: XCTestCase {
             request.value(forHTTPHeaderField: "X-Stockpile-Material-Code"),
             "aggregate_5_14"
         )
+        XCTAssertEqual(
+            request.value(forHTTPHeaderField: "X-Stockpile-Density-Kg-Per-M3"),
+            "1650"
+        )
+        XCTAssertEqual(
+            request.value(forHTTPHeaderField: "X-Stockpile-Pile-Size-Mode"),
+            "small"
+        )
     }
 
     func testRequestBuilderForwardsAdditionalHeaders() {
@@ -82,7 +92,8 @@ final class StockpileCaptureBundleSubmissionTests: XCTestCase {
             boundary: "B",
             captureID: "c",
             siteID: "s",
-            materialCode: "m"
+            materialCode: "m",
+            densityKgPerM3: 1700
         )
         XCTAssertEqual(request.value(forHTTPHeaderField: "Authorization"), "Bearer token-xyz")
     }
@@ -143,7 +154,8 @@ final class StockpileCaptureBundleSubmissionTests: XCTestCase {
             at: bundleURL,
             captureID: "c1",
             siteID: "s1",
-            materialCode: "m1"
+            materialCode: "m1",
+            densityKgPerM3: 1600
         )
         XCTAssertEqual(receipt.captureID, "c1")
         XCTAssertEqual(receipt.jobID, "j1")
@@ -176,7 +188,8 @@ final class StockpileCaptureBundleSubmissionTests: XCTestCase {
                 at: bundleURL,
                 captureID: "c",
                 siteID: "s",
-                materialCode: "m"
+                materialCode: "m",
+                densityKgPerM3: 1600
             )
             XCTFail("expected an HTTP error to be thrown")
         } catch let StockpileCaptureBundleSubmissionError.httpError(statusCode, body) {
@@ -200,7 +213,8 @@ final class StockpileCaptureBundleSubmissionTests: XCTestCase {
                 at: bundleURL,
                 captureID: "c",
                 siteID: "s",
-                materialCode: "m"
+                materialCode: "m",
+                densityKgPerM3: 1600
             )
             XCTFail("expected bundleFileMissing")
         } catch StockpileCaptureBundleSubmissionError.bundleFileMissing {
@@ -226,7 +240,8 @@ final class StockpileCaptureBundleSubmissionTests: XCTestCase {
                 at: bundleURL,
                 captureID: "c",
                 siteID: "s",
-                materialCode: "m"
+                materialCode: "m",
+                densityKgPerM3: 1600
             )
             XCTFail("expected bundleFileEmpty")
         } catch StockpileCaptureBundleSubmissionError.bundleFileEmpty {
@@ -246,7 +261,8 @@ final class StockpileCaptureBundleSubmissionTests: XCTestCase {
             at: URL(fileURLWithPath: "/tmp/anything.zip"),
             captureID: "x",
             siteID: "s",
-            materialCode: "m"
+            materialCode: "m",
+            densityKgPerM3: 1600
         )
         XCTAssertEqual(receipt.captureID, "x")
         XCTAssertEqual(receipt.jobID, "y")
@@ -261,7 +277,8 @@ final class StockpileCaptureBundleSubmissionTests: XCTestCase {
                 at: URL(fileURLWithPath: "/tmp/anything.zip"),
                 captureID: "x",
                 siteID: "s",
-                materialCode: "m"
+                materialCode: "m",
+                densityKgPerM3: 1600
             )
             XCTFail("expected error")
         } catch StockpileCaptureBundleSubmissionError.httpError(let code, _) {

@@ -30,6 +30,8 @@ def _write_bundle(
         "schema_version": 1,
         "frame_count": 2,
         "depth_dtype": "float16",
+        "material_code": "sand",
+        "density_kg_per_m3": 1600,
         **(manifest or {}),
     }
     poses = poses if poses is not None else [{"id": 0}, {"id": 1}]
@@ -83,6 +85,8 @@ def test_unpacks_ios_manifest_and_pose_shape(tmp_path):
     manifest = {
         "schema_version": "1.0",
         "capture_id": "cap-ios",
+        "material_code": "gravel",
+        "density_kg_per_m3": 1850,
         "frame_index": [
             {
                 "frame_id": "frame-000000",
@@ -140,6 +144,8 @@ def test_unpacks_ios_manifest_and_pose_shape(tmp_path):
     bundle = unpack_stockpile_capture(bundle_path, output_dir)
 
     assert bundle.manifest["frame_count"] == 1
+    assert bundle.manifest["material_code"] == "gravel"
+    assert bundle.manifest["density_kg_per_m3"] == 1850
     assert bundle.manifest["depth_dtype"] == "float16"
     assert bundle.manifest["rgb"]["width"] == 4
     assert bundle.manifest["depth"]["width"] == 2
@@ -152,6 +158,33 @@ def test_unpacks_ios_manifest_and_pose_shape(tmp_path):
     assert bundle.poses[0]["timestamp"] == pytest.approx(1.25)
     assert bundle.poses[0]["transform"] == list(range(16))
     assert bundle.poses[0]["intrinsics"] == [1, 0, 0, 0, 1, 0, 0, 0, 1]
+    assert bundle.validation_warnings == []
+
+
+def test_unpacks_ios_camel_case_tracking_summary(tmp_path):
+    bundle_path = tmp_path / "ios-camel-tracking.stockpilecapture"
+    output_dir = tmp_path / "out"
+    _write_bundle(
+        bundle_path,
+        manifest={
+            "frame_count": 2,
+            "tracking_summary": {
+                "totalFrameCount": 2,
+                "trackedFrameCount": 2,
+                "limitedFrameCount": 0,
+                "lostFrameCount": 0,
+            },
+        },
+        poses=[{"tracking_state": "normal"}, {"tracking_state": "normal"}],
+    )
+
+    bundle = unpack_stockpile_capture(bundle_path, output_dir)
+
+    assert bundle.manifest["tracking_state_summary"] == {
+        "normal": 2,
+        "limited": 0,
+        "notAvailable": 0,
+    }
 
 
 def test_rejects_bundle_with_path_traversal_entry(tmp_path):
@@ -217,3 +250,70 @@ def test_rejects_pose_count_mismatch(tmp_path):
 
     with pytest.raises(BundleValidationError, match="pose count"):
         unpack_stockpile_capture(bundle_path, tmp_path / "out")
+
+
+def test_rejects_manifest_missing_explicit_material_code(tmp_path):
+    bundle_path = tmp_path / "capture.stockpilecapture"
+    _write_bundle(bundle_path, manifest={"material_code": ""})
+
+    with pytest.raises(BundleValidationError, match="material_code is required"):
+        unpack_stockpile_capture(bundle_path, tmp_path / "out")
+
+
+@pytest.mark.parametrize("density", [299, 3001, 1600.5, True])
+def test_rejects_manifest_invalid_density(tmp_path, density):
+    bundle_path = tmp_path / "capture.stockpilecapture"
+    _write_bundle(bundle_path, manifest={"density_kg_per_m3": density})
+
+    with pytest.raises(BundleValidationError, match="density_kg_per_m3"):
+        unpack_stockpile_capture(bundle_path, tmp_path / "out")
+
+
+def test_rejects_manifest_unknown_material_code(tmp_path):
+    bundle_path = tmp_path / "capture.stockpilecapture"
+    _write_bundle(bundle_path, manifest={"material_code": "backfill-0-75-mm"})
+
+    with pytest.raises(BundleValidationError, match="material_code must be one of"):
+        unpack_stockpile_capture(bundle_path, tmp_path / "out")
+
+
+def test_accepts_canonical_material_presets_with_editable_density(tmp_path):
+    for material_code in ("sand", "gravel", "backfill", "aggregate", "soil", "other"):
+        bundle_path = tmp_path / f"{material_code}.stockpilecapture"
+        _write_bundle(
+            bundle_path,
+            manifest={
+                "material_code": material_code,
+                "density_kg_per_m3": 1750,
+            },
+        )
+
+        bundle = unpack_stockpile_capture(bundle_path, tmp_path / material_code)
+
+        assert bundle.manifest["material_code"] == material_code
+        assert bundle.manifest["density_kg_per_m3"] == 1750
+
+
+def test_keeps_vision_material_suggestion_separate_from_authoritative_selection(tmp_path):
+    bundle_path = tmp_path / "capture.stockpilecapture"
+    _write_bundle(
+        bundle_path,
+        manifest={
+            "material_code": "gravel",
+            "density_kg_per_m3": 1850,
+            "vision_material_suggestion": {
+                "suggested_material_code": "sand",
+                "confidence_score": 0.64,
+                "source": "vision_foreground_instance_mask",
+            },
+        },
+    )
+
+    bundle = unpack_stockpile_capture(bundle_path, tmp_path / "out")
+
+    assert bundle.manifest["material_code"] == "gravel"
+    assert bundle.manifest["vision_material_suggestion"]["suggested_material_code"] == "sand"
+    assert bundle.validation_warnings == [
+        "manifest.json vision_material_suggestion differs from material_code; "
+        "user-selected material_code remains authoritative"
+    ]

@@ -128,7 +128,7 @@ struct StockpileAppConfiguration: Equatable, Sendable {
 
         let siteName = runtimeValues.stringValue(for: "STOCKPILE_SITE_NAME") ?? "Assigned site"
         let pileName = runtimeValues.stringValue(for: "STOCKPILE_PILE_NAME") ?? "Current stockpile"
-        let materialName = runtimeValues.stringValue(for: "STOCKPILE_MATERIAL_NAME") ?? "Selected material"
+        let materialName = runtimeValues.stringValue(for: "STOCKPILE_MATERIAL_NAME") ?? "Backfill"
 
         let capture = StockpileOperationalCaptureConfiguration(
             siteName: siteName,

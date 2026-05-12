@@ -34,8 +34,8 @@ def _build_capture_zip() -> bytes:
         "schema_version": 1,
         "capture_id": "cap_results_001",
         "site_id": "site_alpha",
-        "material_code": "GRAVEL",
-        "density_kg_per_m3": 2000.0,
+        "material_code": "gravel",
+        "density_kg_per_m3": 2000,
         "frame_count": 1,
         "depth_dtype": "float16",
         "tracking_state_summary": "normal",
@@ -88,6 +88,8 @@ def test_get_result_returns_saved_pipeline_result(client):
     body = response.json()
     assert body["result_id"] == receipt["resultId"]
     assert body["stage"] == "complete"
+    assert body["result_label"] == "review_only"
+    assert body["provisional"] is True
     assert body["weight_kg"] == pytest.approx(3.25 * 2000.0)
     assert body["volume"]["recommended_m3"] == pytest.approx(3.25)
 

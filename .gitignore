@@ -12,4 +12,7 @@ build/
 !tests/fixtures/*
 .streamlit/
 .venv/
+
+# macOS
+.DS_Store
 .venv/

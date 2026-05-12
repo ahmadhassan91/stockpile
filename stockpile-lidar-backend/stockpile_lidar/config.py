@@ -102,6 +102,8 @@ class QualityGateConfig:
     min_grid_occupancy_block_pct: float = 1.0
 
     # 5. Grid-to-hull ratio gate
+    min_grid_to_hull_warn_ratio: float = 0.25
+    min_grid_to_hull_block_ratio: float = 0.10
     max_grid_to_hull_warn_ratio: float = 2.5
     max_grid_to_hull_block_ratio: float = 5.0
 
@@ -116,3 +118,23 @@ class QualityGateConfig:
 
     # 9. Frame-pose-continuity gate (LiDAR-specific)
     max_consecutive_missing_pose_frames_block: int = 5
+
+    # 10. Backend-vs-device sanity gate. The phone quick estimate is not the
+    # reported value, but large disagreement means the reconstruction is not
+    # stable enough for client-facing release.
+    quick_estimate_volume_warn_ratio: float = 1.75
+    quick_estimate_volume_block_ratio: float = 3.00
+
+    # 11. Small-pile mode. Office / sample piles are orders of magnitude
+    # smaller than yard stockpiles, so stockpile-scale geometry is a hard sign
+    # that the scan included ground, wall, background, or a LiDAR height spike.
+    small_pile_volume_warn_m3: float = 0.08
+    small_pile_volume_block_m3: float = 0.25
+    small_pile_footprint_warn_m2: float = 0.50
+    small_pile_footprint_block_m2: float = 1.25
+    small_pile_height_warn_m: float = 0.45
+    small_pile_height_block_m: float = 0.85
+    small_pile_quick_estimate_volume_block_m3: float = 0.30
+    small_pile_quick_estimate_volume_warn_m3: float = 0.10
+    small_pile_quick_estimate_volume_warn_ratio: float = 1.35
+    small_pile_quick_estimate_volume_block_ratio: float = 1.75

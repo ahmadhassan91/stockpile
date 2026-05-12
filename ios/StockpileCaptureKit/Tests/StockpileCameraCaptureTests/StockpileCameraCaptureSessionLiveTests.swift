@@ -168,7 +168,7 @@ final class StockpileCameraCaptureSessionLiveTests: XCTestCase {
         XCTAssertEqual(session.state.activePrompt, "Scene and references look strong. Finish when the last edge is covered.")
     }
 
-    func testMarkerlessLiveGuidanceReachesReadyWithoutTaggedReferences() async {
+    func testMarkerlessLiveGuidanceDoesNotReachReadyFromElapsedTimeAlone() async {
         let controller = TestCameraSessionController(deviceLabel: "Back Wide Camera")
         let platform = TestCameraPlatform(
             currentPermission: .preview,
@@ -205,7 +205,7 @@ final class StockpileCameraCaptureSessionLiveTests: XCTestCase {
             session.state.recordingLifecycle == .recording
         }
 
-        timeSource.advance(by: 28)
+        timeSource.advance(by: 50)
         controller.setSceneAnalysis(
             StockpileCaptureSceneAnalysis(
                 capturedAt: timeSource.now,
@@ -225,18 +225,18 @@ final class StockpileCameraCaptureSessionLiveTests: XCTestCase {
             )
         )
 
-        await waitUntil(timeout: 2) {
-            session.state.phase == .readyToFinish &&
-            session.state.canFinish
-        }
+        try? await Task.sleep(nanoseconds: 200_000_000)
 
         XCTAssertEqual(session.state.guidance.referenceVisibility.title, "LiDAR tracking")
         XCTAssertEqual(session.state.guidance.referenceVisibility.level, .good)
         XCTAssertNil(session.state.guidance.decodedReferenceQuality)
-        XCTAssertTrue(session.state.guidance.isReadyToFinish)
+        XCTAssertEqual(session.state.phase, .capturing)
+        XCTAssertFalse(session.state.canFinish)
+        XCTAssertFalse(session.state.guidance.isReadyToFinish)
+        XCTAssertLessThan(session.state.guidance.coverage.score, 0.5)
         XCTAssertEqual(
             session.state.activePrompt,
-            "Depth tracking looks strong. Finish when the last edge is covered."
+            "Walk slowly around the pile so the app can capture the full perimeter."
         )
     }
 

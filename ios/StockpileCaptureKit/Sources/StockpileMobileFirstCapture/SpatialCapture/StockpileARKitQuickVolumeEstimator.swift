@@ -139,31 +139,29 @@ final class StockpileARKitQuickVolumeEstimator {
     }
 
     private func makeEstimate() -> StockpileDevicePoseQuickVolumeEstimate? {
-        guard sampledWorldPoints.count >= 240, cameraPositions.count >= 6 else {
+        guard sampledWorldPoints.count >= 240, cameraPositions.count >= 4 else {
             return nil
         }
 
-        let cameraHull = convexHull(cameraPositions.map { SIMD2<Float>($0.x, $0.z) })
-        let cameraHullArea = polygonArea(cameraHull)
         let pathDistance = totalPathDistance(cameraPositions)
-        guard cameraHull.count >= 3, cameraHullArea >= 1.5, pathDistance >= 2.5 else {
+        guard pathDistance >= 1.5 else {
             return nil
         }
 
-        let inHullPoints = sampledWorldPoints.filter { point in
-            pointInPolygon(SIMD2<Float>(point.x, point.z), polygon: cameraHull)
-        }
-        guard inHullPoints.count >= 180 else {
+        let candidatePoints = sampledWorldPoints
+        guard candidatePoints.count >= 180 else {
             return nil
         }
 
-        let groundY = percentile(inHullPoints.map { $0.y }, percentile: 0.10)
-        let pilePoints = inHullPoints.filter { point in
+        let groundY = percentile(candidatePoints.map { $0.y }, percentile: 0.10)
+        let pilePoints = candidatePoints.filter { point in
             point.y > groundY + 0.08 && point.y < groundY + 12
         }
         guard pilePoints.count >= 120 else {
             return nil
         }
+        let rawHeights = pilePoints.map { $0.y - groundY }
+        let robustPeakLimit = max(0.35, percentile(rawHeights, percentile: 0.96) * 1.20)
 
         let minX = pilePoints.map { $0.x }.min() ?? 0
         let maxX = pilePoints.map { $0.x }.max() ?? 0
@@ -173,12 +171,13 @@ final class StockpileARKitQuickVolumeEstimator {
             return nil
         }
 
-        let cellSize = max(0.15, min(0.45, sqrt(Double(cameraHullArea)) / 18.0))
+        let footprintSpan = max(Double(maxX - minX), Double(maxZ - minZ))
+        let cellSize = max(0.15, min(0.55, footprintSpan / 20.0))
         let cellArea = cellSize * cellSize
         var maximumHeightByCell: [GridKey: Float] = [:]
 
         for point in pilePoints {
-            let height = max(0, point.y - groundY)
+            let height = min(max(0, point.y - groundY), robustPeakLimit)
             guard height >= 0.03 else {
                 continue
             }
@@ -192,13 +191,16 @@ final class StockpileARKitQuickVolumeEstimator {
             }
         }
 
-        guard maximumHeightByCell.count >= 12 else {
+        guard maximumHeightByCell.count >= 8 else {
             return nil
         }
 
+        let cellHeights = Array(maximumHeightByCell.values)
+        let stableHeightCeiling = max(0.35, percentile(cellHeights, percentile: 0.90) * 1.15)
+        let stableHeights = cellHeights.map { min($0, stableHeightCeiling) }
         let footprintAreaM2 = Double(maximumHeightByCell.count) * cellArea
-        let peakHeightM = Double(maximumHeightByCell.values.max() ?? 0)
-        let volumeM3 = maximumHeightByCell.values.reduce(0.0) { partial, height in
+        let peakHeightM = Double(percentile(stableHeights, percentile: 0.90))
+        let volumeM3 = stableHeights.reduce(0.0) { partial, height in
             partial + Double(height) * cellArea
         }
         guard footprintAreaM2.isFinite,
@@ -211,7 +213,7 @@ final class StockpileARKitQuickVolumeEstimator {
             return nil
         }
 
-        let hullCoverage = min(1.0, max(0.0, footprintAreaM2 / max(Double(cameraHullArea), 0.001)))
+        let footprintScore = min(1.0, footprintAreaM2 / 3.0)
         let pointScore = min(1.0, Double(pilePoints.count) / 900.0)
         let pathScore = min(1.0, Double(pathDistance) / 14.0)
         let heightScore = min(1.0, peakHeightM / 3.0)
@@ -219,7 +221,7 @@ final class StockpileARKitQuickVolumeEstimator {
             1.0,
             max(
                 0.0,
-                hullCoverage * 0.35
+                footprintScore * 0.35
                     + pointScore * 0.30
                     + pathScore * 0.20
                     + heightScore * 0.15

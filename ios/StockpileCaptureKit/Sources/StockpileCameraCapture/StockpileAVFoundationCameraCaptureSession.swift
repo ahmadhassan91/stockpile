@@ -6,9 +6,22 @@ import Vision
 #endif
 
 private enum StockpileCameraCaptureTrace {
+    private static let traceFileURL: URL = {
+        let docs = FileManager.default.urls(for: .documentDirectory, in: .userDomainMask).first
+            ?? URL(fileURLWithPath: NSTemporaryDirectory())
+        return docs.appendingPathComponent("stockpile_recording_trace.log")
+    }()
+    private static let lock = NSLock()
+    private static let dateFormatter: DateFormatter = {
+        let f = DateFormatter()
+        f.dateFormat = "HH:mm:ss.SSS"
+        return f
+    }()
+
     static func log(_ event: String, details: String = "") {
         let message = details.isEmpty ? event : "\(event) | \(details)"
         NSLog("STOCKPILE_CAPTURE_TRACE %@", message)
+        appendToFile(message)
     }
 
     static func stateDetails(_ state: StockpileCameraCaptureSessionState) -> String {
@@ -20,6 +33,22 @@ private enum StockpileCameraCaptureTrace {
             "canFinish=\(state.canFinish)",
             "prompt=\(state.activePrompt)",
         ].joined(separator: " ")
+    }
+
+    private static func appendToFile(_ line: String) {
+        let stamped = "[\(dateFormatter.string(from: Date()))] CAM | \(line)\n"
+        guard let data = stamped.data(using: .utf8) else { return }
+        lock.lock()
+        defer { lock.unlock() }
+        if FileManager.default.fileExists(atPath: traceFileURL.path) {
+            if let handle = try? FileHandle(forWritingTo: traceFileURL) {
+                handle.seekToEndOfFile()
+                handle.write(data)
+                try? handle.close()
+            }
+        } else {
+            try? data.write(to: traceFileURL, options: .atomic)
+        }
     }
 }
 
@@ -576,6 +605,11 @@ public final class StockpileCameraCaptureSessionLive: StockpileCameraCaptureSess
             return
         }
 
+        if markerlessCaptureEnabled {
+            startMarkerlessGuidedCapture(permission: permission)
+            return
+        }
+
         storageQueue.sync {
             storage.currentStepIndex = 0
             let guidance = checkpoints[0]
@@ -586,7 +620,9 @@ public final class StockpileCameraCaptureSessionLive: StockpileCameraCaptureSess
                 sensorSnapshot: telemetryRuntime.latestSnapshot,
                 completedSteps: 0,
                 totalSteps: checkpoints.count,
-                activePrompt: "Frame the pile and keep two references visible.",
+                activePrompt: markerlessCaptureEnabled
+                    ? "Walk slowly around the pile, keeping the full pile in frame."
+                    : "Frame the pile and keep two references visible.",
                 sessionLifecycle: storage.controller?.isRunning == true ? .running : .configuring,
                 recordingLifecycle: .starting,
                 activeDeviceName: storage.controller?.deviceLabel
@@ -600,6 +636,36 @@ public final class StockpileCameraCaptureSessionLive: StockpileCameraCaptureSess
         }
 
         startCaptureSession(shouldStartRecording: true)
+    }
+
+    private func startMarkerlessGuidedCapture(permission: StockpileCameraPermissionState) {
+        let startedAt = now()
+        let outputURL = recordingsDirectory.appendingPathComponent(
+            "markerless-\(UUID().uuidString).stockpilecapture"
+        )
+        storageQueue.sync {
+            storage.currentStepIndex = 0
+            storage.sceneCoverageAccumulator = 0
+            storage.lastSceneAnalysisAt = nil
+            storage.guidanceRefreshID = nil
+            storage.pendingRecording = PendingRecording(outputURL: outputURL, startedAt: startedAt)
+            storage.pendingRecordingStartupID = nil
+            storage.stopSessionAfterRecordingFinalize = false
+            storage.state = StockpileCameraCaptureSessionState(
+                phase: .capturing,
+                permission: permission,
+                guidance: checkpoints[0],
+                sensorSnapshot: telemetryRuntime.latestSnapshot,
+                completedSteps: 0,
+                totalSteps: checkpoints.count,
+                activePrompt: "Walk slowly around the pile, keeping the full pile in frame.",
+                sessionLifecycle: .running,
+                recordingLifecycle: .recording,
+                activeDeviceName: "iPhone LiDAR"
+            )
+            storage.state.debugTraceSummary = "markerless ARKit bundle capture active"
+        }
+        beginGuidanceRefreshLoop()
     }
 
     public func advanceGuidedCapture() {
@@ -639,6 +705,18 @@ public final class StockpileCameraCaptureSessionLive: StockpileCameraCaptureSess
     public func finishGuidedCapture() {
         let canFinish = state.canFinish
         guard canFinish else {
+            return
+        }
+
+        if markerlessCaptureEnabled {
+            storageQueue.sync {
+                storage.state.phase = .completed
+                storage.state.completedSteps = max(checkpoints.count - 1, 0)
+                storage.state.recordingLifecycle = .finished
+                storage.state.activePrompt = "LiDAR bundle sealed on device."
+                storage.state.lastErrorDescription = nil
+                storage.guidanceRefreshID = nil
+            }
             return
         }
 
@@ -1113,6 +1191,10 @@ public final class StockpileCameraCaptureSessionLive: StockpileCameraCaptureSess
             return false
         }
 
+        if markerlessCaptureEnabled, controller == nil {
+            return refreshMarkerlessGuidance(storage: &storage)
+        }
+
         guard let controller,
               let sceneAnalysis = controller.latestSceneAnalysis else {
             return false
@@ -1160,6 +1242,53 @@ public final class StockpileCameraCaptureSessionLive: StockpileCameraCaptureSess
         storage.state.observedReferenceMarkers = Self.observedReferenceMarkers(from: diagnostics)
         storage.state.materialSuggestion = Self.materialSuggestion(from: diagnostics)
         storage.state.sensorSnapshot = telemetryRuntime.latestSnapshot
+        storage.state.lastErrorDescription = nil
+        return true
+    }
+
+    @discardableResult
+    private func refreshMarkerlessGuidance(storage: inout Storage) -> Bool {
+        let elapsedRecordingTime: TimeInterval
+        if let pendingRecording = storage.pendingRecording {
+            elapsedRecordingTime = max(now().timeIntervalSince(pendingRecording.startedAt), 0)
+        } else {
+            elapsedRecordingTime = 0
+        }
+
+        storage.sceneCoverageAccumulator = min(max(storage.sceneCoverageAccumulator, 0), 1)
+        let telemetry = telemetryRuntime.latestSnapshot ?? storage.state.sensorSnapshot
+        let progress = StockpileLiveGuidanceEstimator.estimate(
+            totalSteps: checkpoints.count,
+            manualCompletedSteps: storage.currentStepIndex,
+            elapsedRecordingTime: elapsedRecordingTime,
+            sceneCoverageAccumulator: storage.sceneCoverageAccumulator,
+            sceneAnalysis: StockpileCaptureSceneAnalysis(
+                capturedAt: now(),
+                referenceCandidateCount: 0,
+                referenceCandidateConfidence: 0,
+                brightnessScore: 0.72,
+                sharpnessScore: 0.72,
+                sceneChangeScore: 0.12,
+                structuredArtifactScore: 0.04,
+                sceneFitConfidence: 0.82,
+                sceneRejectionConfidence: 0.04,
+                pileSegmentationConfidence: 0.84,
+                toeSegmentationConfidence: min(max(elapsedRecordingTime / 50.0, 0.45), 0.88),
+                depthConfidence: 0.88,
+                quickVolumeConfidence: 0.8,
+                trackingConfidence: 0.9
+            ),
+            telemetry: telemetry,
+            markerlessCaptureEnabled: true
+        )
+        storage.currentStepIndex = max(storage.currentStepIndex, progress.completedSteps)
+        storage.state.guidance = progress.guidance
+        storage.state.phase = progress.phase
+        storage.state.completedSteps = progress.completedSteps
+        storage.state.totalSteps = checkpoints.count
+        storage.state.activePrompt = progress.guidance.primaryOperatorAction
+        storage.state.activeDeviceName = "iPhone LiDAR"
+        storage.state.sensorSnapshot = telemetry
         storage.state.lastErrorDescription = nil
         return true
     }

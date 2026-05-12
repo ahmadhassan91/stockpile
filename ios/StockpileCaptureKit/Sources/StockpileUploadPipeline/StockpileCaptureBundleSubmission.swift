@@ -86,7 +86,9 @@ public protocol StockpileCaptureBundleSubmitting: Sendable {
         at fileURL: URL,
         captureID: String,
         siteID: String,
-        materialCode: String
+        materialCode: String,
+        densityKgPerM3: Int,
+        pileSizeMode: String?
     ) async throws -> StockpileCaptureBundleSubmissionReceipt
 }
 
@@ -137,7 +139,9 @@ public struct URLSessionCaptureBundleSubmitter: StockpileCaptureBundleSubmitting
         at fileURL: URL,
         captureID: String,
         siteID: String,
-        materialCode: String
+        materialCode: String,
+        densityKgPerM3: Int,
+        pileSizeMode: String? = nil
     ) async throws -> StockpileCaptureBundleSubmissionReceipt {
         try Self.validateBundleFile(at: fileURL)
 
@@ -152,7 +156,9 @@ public struct URLSessionCaptureBundleSubmitter: StockpileCaptureBundleSubmitting
             boundary: boundary,
             captureID: captureID,
             siteID: siteID,
-            materialCode: materialCode
+            materialCode: materialCode,
+            densityKgPerM3: densityKgPerM3,
+            pileSizeMode: pileSizeMode
         )
 
         let (data, response) = try await session.upload(for: request, fromFile: multipartBodyURL)
@@ -183,7 +189,9 @@ public struct URLSessionCaptureBundleSubmitter: StockpileCaptureBundleSubmitting
         boundary: String,
         captureID: String,
         siteID: String,
-        materialCode: String
+        materialCode: String,
+        densityKgPerM3: Int,
+        pileSizeMode: String? = nil
     ) -> URLRequest {
         var request = URLRequest(
             url: configuration.endpointURL,
@@ -199,6 +207,10 @@ public struct URLSessionCaptureBundleSubmitter: StockpileCaptureBundleSubmitting
         request.setValue(captureID, forHTTPHeaderField: "X-Stockpile-Capture-ID")
         request.setValue(siteID, forHTTPHeaderField: "X-Stockpile-Site-ID")
         request.setValue(materialCode, forHTTPHeaderField: "X-Stockpile-Material-Code")
+        request.setValue(String(densityKgPerM3), forHTTPHeaderField: "X-Stockpile-Density-Kg-Per-M3")
+        if let pileSizeMode, pileSizeMode.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty == false {
+            request.setValue(pileSizeMode, forHTTPHeaderField: "X-Stockpile-Pile-Size-Mode")
+        }
         for (key, value) in configuration.additionalHeaders {
             request.setValue(value, forHTTPHeaderField: key)
         }
@@ -293,7 +305,9 @@ public struct MockStockpileCaptureBundleSubmitter: StockpileCaptureBundleSubmitt
         at fileURL: URL,
         captureID: String,
         siteID: String,
-        materialCode: String
+        materialCode: String,
+        densityKgPerM3: Int,
+        pileSizeMode: String? = nil
     ) async throws -> StockpileCaptureBundleSubmissionReceipt {
         switch behaviour {
         case let .success(receipt):

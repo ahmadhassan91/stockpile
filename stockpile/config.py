@@ -1,8 +1,12 @@
 """Pipeline configuration dataclasses."""
 
 from dataclasses import dataclass, field
+import math
+import os
 from pathlib import Path
 from typing import Optional
+
+from .tagged_references import TaggedReferenceCatalog, TaggedReferenceSpec
 
 
 @dataclass
@@ -40,6 +44,77 @@ class ConeDetectionConfig:
     # have 2-6 physical cones; 29 "unique cones" means the detector is eating
     # the pile's aggregate texture.
     max_unique_cones_ceiling: int = 8
+
+
+@dataclass
+class TaggedReferenceConfig:
+    """Configuration for known tag-based physical references."""
+
+    enabled: bool = False
+    detector_backend: str = "apriltag"
+    family: str = "tag36h11"
+    default_tag_size_m: float = 0.18
+    min_tag_edge_px: int = 24
+    max_hamming: int = 0
+    min_detections_per_tag: int = 2
+    allowed_tag_ids: tuple[int, ...] = ()
+    require_catalog_match: bool = False
+    prefer_tagged_scale_when_available: bool = True
+    catalog: tuple[TaggedReferenceSpec, ...] = field(default_factory=tuple)
+
+    def __post_init__(self):
+        if self.default_tag_size_m <= 0:
+            raise ValueError("default_tag_size_m must be positive")
+        if self.min_tag_edge_px <= 0:
+            raise ValueError("min_tag_edge_px must be positive")
+        if self.min_detections_per_tag <= 0:
+            raise ValueError("min_detections_per_tag must be positive")
+        if self.max_hamming < 0:
+            raise ValueError("max_hamming must be non-negative")
+
+        self.allowed_tag_ids = tuple(sorted(set(self.allowed_tag_ids)))
+        self.catalog = tuple(self.catalog)
+
+        mismatched_families = sorted({reference.family for reference in self.catalog if reference.family != self.family})
+        if mismatched_families:
+            raise ValueError(
+                "catalog contains tagged references for unexpected families: "
+                f"{mismatched_families}; expected only {self.family!r}",
+            )
+
+        if self.allowed_tag_ids and self.require_catalog_match:
+            missing_ids = sorted(set(self.allowed_tag_ids) - set(self.catalog_tag_ids))
+            if missing_ids:
+                raise ValueError(
+                    "allowed_tag_ids must exist in catalog when require_catalog_match=True; "
+                    f"missing ids: {missing_ids}",
+                )
+
+    @property
+    def catalog_view(self) -> TaggedReferenceCatalog:
+        return TaggedReferenceCatalog(references=self.catalog)
+
+    @property
+    def catalog_tag_ids(self) -> tuple[int, ...]:
+        return self.catalog_view.tag_ids
+
+    def spec_for_tag(self, tag_id: int) -> TaggedReferenceSpec | None:
+        if tag_id < 0:
+            return None
+        if self.allowed_tag_ids and tag_id not in self.allowed_tag_ids:
+            return None
+
+        catalog_match = self.catalog_view.get(tag_id, self.family)
+        if catalog_match is not None:
+            return catalog_match
+        if self.require_catalog_match:
+            return None
+
+        return TaggedReferenceSpec(
+            tag_id=tag_id,
+            family=self.family,
+            tag_size_m=self.default_tag_size_m,
+        )
 
 
 @dataclass
@@ -108,6 +183,10 @@ class ScaleCalibrationConfig:
     camera_height_ground_std_rel_max: float = 0.10
     camera_height_cone_cv_max: float = 0.75
     min_camera_height_confidence_for_crosscheck: float = 0.20
+    min_mobile_pose_confidence_for_crosscheck: float = 0.25
+    max_mobile_pose_time_offset_sec: float = 0.35
+    min_mobile_pose_matches: int = 3
+    min_mobile_pose_pair_span_m: float = 0.35
     max_method_disagreement_ratio: float = 1.75
     random_seed: int = 7
 
@@ -184,6 +263,15 @@ class QualityGateConfig:
     single_cone_review_min_pile_points: int = 10000
     single_cone_review_min_grid_occupancy_pct: float = 10.0
     single_cone_review_max_scale_disagreement: float = 2.0
+    # Footprint provenance is now one of the highest-signal post-scale risk
+    # indicators. If the volume falls back to a cone hull or observed convex
+    # hull instead of a toe-aware footprint, keep the run review-grade even if
+    # scale calibration looks stable.
+    weak_footprint_warn_sources: tuple[str, ...] = (
+        "cone_hull",
+        "observed_hull",
+        "observed_hull_fallback",
+    )
 
 
 # Material presets — names and max bulk densities from the site density table.
@@ -202,11 +290,94 @@ DENSITY_RANGES = {
 }
 
 
+def _env_bool(name: str, default: bool) -> bool:
+    raw = os.environ.get(name, "").strip().lower()
+    if not raw:
+        return bool(default)
+    if raw in {"1", "true", "yes", "on"}:
+        return True
+    if raw in {"0", "false", "no", "off"}:
+        return False
+    return bool(default)
+
+
+def _env_float(name: str, default: float) -> float:
+    raw = os.environ.get(name, "").strip()
+    if not raw:
+        return float(default)
+    try:
+        return float(raw)
+    except ValueError:
+        return float(default)
+
+
+def _env_optional_float(name: str) -> float | None:
+    raw = os.environ.get(name, "").strip()
+    if not raw:
+        return None
+    try:
+        return float(raw)
+    except ValueError:
+        return None
+
+
+def _env_int(name: str, default: int, *, minimum: int = 0) -> int:
+    raw = os.environ.get(name, "").strip()
+    if not raw:
+        return max(minimum, int(default))
+    try:
+        parsed = int(raw)
+    except ValueError:
+        return max(minimum, int(default))
+    return max(minimum, parsed)
+
+
+def _env_int_tuple(name: str, default: tuple[int, ...] = ()) -> tuple[int, ...]:
+    raw = os.environ.get(name, "").strip()
+    if not raw:
+        return tuple(default)
+
+    values: list[int] = []
+    seen: set[int] = set()
+    for chunk in raw.split(","):
+        chunk = chunk.strip()
+        if not chunk:
+            continue
+        try:
+            parsed = int(chunk)
+        except ValueError:
+            continue
+        if parsed < 0 or parsed in seen:
+            continue
+        seen.add(parsed)
+        values.append(parsed)
+    return tuple(sorted(values))
+
+
+def _optional_ratio(value: float | int | None) -> float | None:
+    if value is None:
+        return None
+    parsed = float(value)
+    if not math.isfinite(parsed):
+        raise ValueError("ratio values must be finite")
+    return max(0.0, min(1.0, parsed))
+
+
+def _optional_non_negative_float(name: str, value: float | int | None) -> float | None:
+    if value is None:
+        return None
+    parsed = float(value)
+    if not math.isfinite(parsed) or parsed < 0:
+        raise ValueError(f"{name} must be non-negative")
+    return parsed
+
+
 @dataclass
 class PipelineConfig:
     workspace: Path = field(default_factory=lambda: Path("data/workspace"))
     frame_extraction: FrameExtractionConfig = field(default_factory=FrameExtractionConfig)
     cone_detection: ConeDetectionConfig = field(default_factory=ConeDetectionConfig)
+    tagged_references: TaggedReferenceConfig = field(default_factory=TaggedReferenceConfig)
     colmap: ColmapConfig = field(default_factory=ColmapConfig)
     scale_calibration: ScaleCalibrationConfig = field(default_factory=ScaleCalibrationConfig)
     ground_plane: GroundPlaneConfig = field(default_factory=GroundPlaneConfig)
@@ -214,6 +385,7 @@ class PipelineConfig:
     quality_gates: QualityGateConfig = field(default_factory=QualityGateConfig)
     material_density: float = 2100.0  # kg/m3 — default: Backfill 0-75mm max density
     material_name: str = "Backfill 0\u201375 mm"
+    mobile_capture_prior: "MobileCapturePrior | None" = None
     manual_scale_override: Optional[float] = None  # If set, bypass auto calibration
     progress_callback: Optional[object] = field(default=None, repr=False)
 
@@ -235,3 +407,138 @@ class PipelineConfig:
     @property
     def output_dir(self) -> Path:
         return self.workspace / "output"
+
+
+@dataclass(frozen=True)
+class MobileCapturePrior:
+    reference_evidence_timestamps_sec: tuple[float, ...] = ()
+    useful_pose_sample_timestamps_sec: tuple[float, ...] = ()
+    reference_evidence_count: int = 0
+    pose_sample_count: int = 0
+    useful_pose_sample_count: int = 0
+    depth_data_included: bool | None = None
+    pile_segmentation_score: float | None = None
+    toe_segmentation_score: float | None = None
+    segmentation_confidence_score: float | None = None
+    quick_volume_m3: float | None = None
+    quick_footprint_area_m2: float | None = None
+    quick_peak_height_m: float | None = None
+    quick_confidence_score: float | None = None
+    quick_geometry_point_count: int | None = None
+    quick_camera_path_distance_m: float | None = None
+
+    def __post_init__(self):
+        object.__setattr__(
+            self,
+            "reference_evidence_timestamps_sec",
+            tuple(float(timestamp) for timestamp in self.reference_evidence_timestamps_sec),
+        )
+        object.__setattr__(
+            self,
+            "useful_pose_sample_timestamps_sec",
+            tuple(float(timestamp) for timestamp in self.useful_pose_sample_timestamps_sec),
+        )
+        if self.reference_evidence_count < 0:
+            raise ValueError("reference_evidence_count must be non-negative")
+        if self.pose_sample_count < 0:
+            raise ValueError("pose_sample_count must be non-negative")
+        if self.useful_pose_sample_count < 0:
+            raise ValueError("useful_pose_sample_count must be non-negative")
+        object.__setattr__(self, "pile_segmentation_score", _optional_ratio(self.pile_segmentation_score))
+        object.__setattr__(self, "toe_segmentation_score", _optional_ratio(self.toe_segmentation_score))
+        object.__setattr__(
+            self,
+            "segmentation_confidence_score",
+            _optional_ratio(self.segmentation_confidence_score),
+        )
+        object.__setattr__(
+            self,
+            "quick_volume_m3",
+            _optional_non_negative_float("quick_volume_m3", self.quick_volume_m3),
+        )
+        object.__setattr__(
+            self,
+            "quick_footprint_area_m2",
+            _optional_non_negative_float("quick_footprint_area_m2", self.quick_footprint_area_m2),
+        )
+        object.__setattr__(
+            self,
+            "quick_peak_height_m",
+            _optional_non_negative_float("quick_peak_height_m", self.quick_peak_height_m),
+        )
+        object.__setattr__(self, "quick_confidence_score", _optional_ratio(self.quick_confidence_score))
+        if self.quick_geometry_point_count is not None and self.quick_geometry_point_count < 0:
+            raise ValueError("quick_geometry_point_count must be non-negative")
+        object.__setattr__(
+            self,
+            "quick_camera_path_distance_m",
+            _optional_non_negative_float(
+                "quick_camera_path_distance_m",
+                self.quick_camera_path_distance_m,
+            ),
+        )
+
+
+def build_mobile_job_pipeline_config(
+    *,
+    workspace: str | Path,
+    material_density_kg_per_m3: int | float,
+    material_name: str,
+    progress_callback=None,
+    mobile_capture_prior: MobileCapturePrior | None = None,
+) -> PipelineConfig:
+    """Build a pipeline config for the durable mobile job runner."""
+    config = PipelineConfig(
+        workspace=Path(workspace),
+        material_density=float(material_density_kg_per_m3),
+        material_name=str(material_name),
+        mobile_capture_prior=mobile_capture_prior,
+        progress_callback=progress_callback,
+    )
+
+    tagged_defaults = config.tagged_references
+    config.tagged_references = TaggedReferenceConfig(
+        enabled=_env_bool("STOCKPILE_MOBILE_TAGGED_REFERENCES_ENABLED", True),
+        detector_backend=os.environ.get(
+            "STOCKPILE_MOBILE_TAG_DETECTOR_BACKEND",
+            tagged_defaults.detector_backend,
+        ),
+        family=os.environ.get(
+            "STOCKPILE_MOBILE_TAG_FAMILY",
+            tagged_defaults.family,
+        ),
+        default_tag_size_m=_env_float(
+            "STOCKPILE_MOBILE_TAG_SIZE_M",
+            tagged_defaults.default_tag_size_m,
+        ),
+        min_tag_edge_px=_env_int(
+            "STOCKPILE_MOBILE_MIN_TAG_EDGE_PX",
+            tagged_defaults.min_tag_edge_px,
+            minimum=1,
+        ),
+        max_hamming=_env_int(
+            "STOCKPILE_MOBILE_TAG_MAX_HAMMING",
+            tagged_defaults.max_hamming,
+            minimum=0,
+        ),
+        min_detections_per_tag=_env_int(
+            "STOCKPILE_MOBILE_MIN_DETECTIONS_PER_TAG",
+            tagged_defaults.min_detections_per_tag,
+            minimum=1,
+        ),
+        allowed_tag_ids=_env_int_tuple(
+            "STOCKPILE_MOBILE_ALLOWED_TAG_IDS",
+            tagged_defaults.allowed_tag_ids,
+        ),
+        require_catalog_match=_env_bool(
+            "STOCKPILE_MOBILE_REQUIRE_CATALOG_MATCH",
+            tagged_defaults.require_catalog_match,
+        ),
+        prefer_tagged_scale_when_available=_env_bool(
+            "STOCKPILE_MOBILE_PREFER_TAGGED_SCALE",
+            tagged_defaults.prefer_tagged_scale_when_available,
+        ),
+        catalog=tagged_defaults.catalog,
+    )
+    config.manual_scale_override = _env_optional_float("STOCKPILE_MOBILE_MANUAL_SCALE_OVERRIDE")
+    return config

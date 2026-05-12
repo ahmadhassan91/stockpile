@@ -10,6 +10,11 @@ import numpy as np
 
 
 SUPPORTED_SCHEMA_VERSION = 1
+SUPPORTED_MATERIAL_CODES = frozenset(
+    {"sand", "gravel", "backfill", "aggregate", "soil", "other"}
+)
+MIN_DENSITY_KG_PER_M3 = 300
+MAX_DENSITY_KG_PER_M3 = 3000
 
 
 class BundleValidationError(ValueError):
@@ -23,6 +28,7 @@ class StockpileCaptureBundle:
     poses: list
     rgb_frames: list[Path]
     depth_frames: list[Path]
+    validation_warnings: list[str]
 
 
 def unpack_stockpile_capture(bundle_path: str | Path, output_dir: str | Path) -> StockpileCaptureBundle:
@@ -40,7 +46,12 @@ def unpack_stockpile_capture(bundle_path: str | Path, output_dir: str | Path) ->
         rgb_members = _frame_members(members, "rgb")
         depth_members = _frame_members(members, "depth")
 
-        _validate_manifest(manifest, len(rgb_members), len(depth_members), len(poses))
+        validation_warnings = _validate_manifest(
+            manifest,
+            len(rgb_members),
+            len(depth_members),
+            len(poses),
+        )
         _validate_depth_frames(archive, depth_members)
         _extract_members(archive, members, output_dir)
 
@@ -50,6 +61,7 @@ def unpack_stockpile_capture(bundle_path: str | Path, output_dir: str | Path) ->
         poses=poses,
         rgb_frames=[output_dir / name for name, _ in rgb_members],
         depth_frames=[output_dir / name for name, _ in depth_members],
+        validation_warnings=validation_warnings,
     )
 
 
@@ -124,7 +136,7 @@ def _validate_manifest(
     rgb_count: int,
     depth_count: int,
     pose_count: int,
-) -> None:
+) -> list[str]:
     if not isinstance(manifest, dict):
         raise BundleValidationError("manifest.json must contain an object")
 
@@ -146,6 +158,72 @@ def _validate_manifest(
 
     if manifest.get("depth_dtype") != "float16":
         raise BundleValidationError("manifest.json depth_dtype must be float16")
+
+    return _validate_material_fields(manifest)
+
+
+def _validate_material_fields(manifest: dict) -> list[str]:
+    material_code = manifest.get("material_code")
+    if not isinstance(material_code, str) or not material_code.strip():
+        raise BundleValidationError(
+            "manifest.json material_code is required and must be user-selected"
+        )
+
+    normalized_material_code = material_code.strip().lower()
+    if material_code != normalized_material_code:
+        manifest["material_code"] = normalized_material_code
+
+    if normalized_material_code not in SUPPORTED_MATERIAL_CODES:
+        supported = ", ".join(sorted(SUPPORTED_MATERIAL_CODES))
+        raise BundleValidationError(
+            f"manifest.json material_code must be one of: {supported}"
+        )
+
+    density = manifest.get("density_kg_per_m3")
+    if isinstance(density, bool) or not isinstance(density, int):
+        raise BundleValidationError("manifest.json density_kg_per_m3 must be an integer")
+    if density < MIN_DENSITY_KG_PER_M3 or density > MAX_DENSITY_KG_PER_M3:
+        raise BundleValidationError(
+            "manifest.json density_kg_per_m3 must be between "
+            f"{MIN_DENSITY_KG_PER_M3} and {MAX_DENSITY_KG_PER_M3}"
+        )
+
+    return _validate_vision_material_suggestion(manifest, normalized_material_code)
+
+
+def _validate_vision_material_suggestion(
+    manifest: dict,
+    material_code: str,
+) -> list[str]:
+    suggestion = manifest.get("vision_material_suggestion")
+    if suggestion is None:
+        return []
+    if not isinstance(suggestion, dict):
+        raise BundleValidationError("manifest.json vision_material_suggestion must be an object")
+
+    warnings: list[str] = []
+    suggested_code = suggestion.get("suggested_material_code")
+    if not isinstance(suggested_code, str) or not suggested_code.strip():
+        warnings.append(
+            "manifest.json vision_material_suggestion.suggested_material_code is missing"
+        )
+        return warnings
+
+    normalized_suggested_code = suggested_code.strip().lower()
+    if suggested_code != normalized_suggested_code:
+        suggestion["suggested_material_code"] = normalized_suggested_code
+
+    if normalized_suggested_code not in SUPPORTED_MATERIAL_CODES:
+        warnings.append(
+            "manifest.json vision_material_suggestion.suggested_material_code "
+            f"is unknown: {normalized_suggested_code}"
+        )
+    elif normalized_suggested_code != material_code:
+        warnings.append(
+            "manifest.json vision_material_suggestion differs from material_code; "
+            "user-selected material_code remains authoritative"
+        )
+    return warnings
 
 
 def _normalize_manifest(manifest: dict) -> None:
@@ -186,9 +264,9 @@ def _normalize_manifest(manifest: dict) -> None:
         and isinstance(tracking_summary, dict)
     ):
         manifest["tracking_state_summary"] = {
-            "normal": tracking_summary.get("tracked_frame_count", 0),
-            "limited": tracking_summary.get("limited_frame_count", 0),
-            "notAvailable": tracking_summary.get("lost_frame_count", 0),
+            "normal": _first_present(tracking_summary, "tracked_frame_count", "trackedFrameCount"),
+            "limited": _first_present(tracking_summary, "limited_frame_count", "limitedFrameCount"),
+            "notAvailable": _first_present(tracking_summary, "lost_frame_count", "lostFrameCount"),
         }
 
     quick_estimate = manifest.get("on_device_quick_estimate")
@@ -208,6 +286,13 @@ def _normalize_quick_estimate(payload: dict) -> None:
     for canonical, legacy in aliases.items():
         if canonical not in payload and legacy in payload:
             payload[canonical] = payload[legacy]
+
+
+def _first_present(payload: dict, *keys: str, default=0):
+    for key in keys:
+        if key in payload:
+            return payload[key]
+    return default
 
 
 def _first_nested_dict(items: list, key: str) -> dict | None:

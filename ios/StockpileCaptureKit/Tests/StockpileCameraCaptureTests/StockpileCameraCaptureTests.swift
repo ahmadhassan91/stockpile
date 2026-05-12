@@ -2,7 +2,7 @@ import XCTest
 @testable import StockpileCameraCapture
 
 final class StockpileCameraCaptureTests: XCTestCase {
-    func testMarkerlessGuidanceUsesDepthQuickVolumeAndTrackingInsteadOfReferenceBlocking() {
+    func testMarkerlessGuidanceReachesReadyAfterFullWalkaround() {
         let telemetry = StockpileCaptureSensorSnapshot(
             sampleCount: 32,
             motionSignalsIncluded: true,
@@ -21,7 +21,7 @@ final class StockpileCameraCaptureTests: XCTestCase {
         let progress = StockpileLiveGuidanceEstimator.estimate(
             totalSteps: 3,
             manualCompletedSteps: 0,
-            elapsedRecordingTime: 24,
+            elapsedRecordingTime: 50,
             sceneCoverageAccumulator: 0.86,
             sceneAnalysis: StockpileCaptureSceneAnalysis(
                 capturedAt: Date(timeIntervalSince1970: 10),
@@ -49,6 +49,166 @@ final class StockpileCameraCaptureTests: XCTestCase {
         XCTAssertNil(progress.guidance.decodedReferenceQuality)
         XCTAssertEqual(progress.guidance.sceneFit?.level, .good)
         XCTAssertEqual(progress.guidance.sceneRejection?.level, .good)
+    }
+
+    func testMarkerlessGuidanceCanSealAfterFullCoverageWhenMotionIsOnlyWatch() {
+        let progress = StockpileLiveGuidanceEstimator.estimate(
+            totalSteps: 3,
+            manualCompletedSteps: 0,
+            elapsedRecordingTime: 55,
+            sceneCoverageAccumulator: 1,
+            sceneAnalysis: StockpileCaptureSceneAnalysis(
+                capturedAt: Date(timeIntervalSince1970: 10),
+                referenceCandidateCount: 0,
+                referenceCandidateConfidence: 0,
+                brightnessScore: 0.72,
+                sharpnessScore: 0.74,
+                sceneChangeScore: 0.86,
+                structuredArtifactScore: 0.02,
+                sceneFitConfidence: 0.84,
+                sceneRejectionConfidence: 0.04,
+                pileSegmentationConfidence: 0.9,
+                toeSegmentationConfidence: 0.88,
+                depthConfidence: 0.9,
+                quickVolumeConfidence: 0.86,
+                trackingConfidence: 0.9
+            ),
+            telemetry: nil,
+            markerlessCaptureEnabled: true
+        )
+
+        XCTAssertEqual(progress.phase, .readyToFinish)
+        XCTAssertFalse(progress.guidance.isReadyToFinish)
+        XCTAssertEqual(progress.guidance.coverage.level, .good)
+        XCTAssertEqual(progress.guidance.motion.level, .watch)
+        XCTAssertEqual(
+            progress.guidance.primaryOperatorAction,
+            "Review-only allowed. Finish now, or make one steadier pass for production confidence."
+        )
+    }
+
+    func testMarkerlessGuidanceDoesNotProgressWhenOperatorStandsStill() {
+        let progress = StockpileLiveGuidanceEstimator.estimate(
+            totalSteps: 3,
+            manualCompletedSteps: 0,
+            elapsedRecordingTime: 65,
+            sceneCoverageAccumulator: 0,
+            sceneAnalysis: StockpileCaptureSceneAnalysis(
+                capturedAt: Date(timeIntervalSince1970: 11),
+                referenceCandidateCount: 0,
+                referenceCandidateConfidence: 0,
+                brightnessScore: 0.74,
+                sharpnessScore: 0.76,
+                sceneChangeScore: 0,
+                structuredArtifactScore: 0.02,
+                sceneFitConfidence: 0.86,
+                sceneRejectionConfidence: 0.04,
+                pileSegmentationConfidence: 0.9,
+                toeSegmentationConfidence: 0.88,
+                depthConfidence: 0.9,
+                quickVolumeConfidence: 0.86,
+                trackingConfidence: 0.92
+            ),
+            telemetry: nil,
+            markerlessCaptureEnabled: true
+        )
+
+        XCTAssertEqual(progress.completedSteps, 0)
+        XCTAssertEqual(progress.phase, .capturing)
+        XCTAssertFalse(progress.guidance.isReadyToFinish)
+        XCTAssertEqual(progress.guidance.coverage.level, .blocked)
+        XCTAssertLessThan(progress.guidance.coverage.score, 0.5)
+        XCTAssertEqual(
+            progress.guidance.primaryOperatorAction,
+            "Walk slowly around the pile so the app can capture the full perimeter."
+        )
+    }
+
+    func testMarkerlessGuidanceBlocksFinishWhenToeAndDepthAreWeak() {
+        let progress = StockpileLiveGuidanceEstimator.estimate(
+            totalSteps: 3,
+            manualCompletedSteps: 0,
+            elapsedRecordingTime: 60,
+            sceneCoverageAccumulator: 1,
+            sceneAnalysis: StockpileCaptureSceneAnalysis(
+                capturedAt: Date(timeIntervalSince1970: 12),
+                referenceCandidateCount: 0,
+                referenceCandidateConfidence: 0,
+                brightnessScore: 0.74,
+                sharpnessScore: 0.76,
+                sceneChangeScore: 0.9,
+                structuredArtifactScore: 0.02,
+                sceneFitConfidence: 0.86,
+                sceneRejectionConfidence: 0.04,
+                pileSegmentationConfidence: 0.9,
+                toeSegmentationConfidence: 0.34,
+                depthConfidence: 0.4,
+                quickVolumeConfidence: 0.86,
+                trackingConfidence: 0.92
+            ),
+            telemetry: nil,
+            markerlessCaptureEnabled: true
+        )
+
+        XCTAssertEqual(progress.phase, .capturing)
+        XCTAssertFalse(progress.guidance.isReadyToFinish)
+        XCTAssertEqual(progress.guidance.referenceVisibility.level, .blocked)
+        XCTAssertEqual(progress.guidance.toeSegmentation?.level, .blocked)
+        XCTAssertEqual(
+            progress.guidance.primaryOperatorAction,
+            "Hold wider until depth can read the toe and pile face."
+        )
+    }
+
+    func testMarkerlessGuidanceDoesNotFinishAfterOnlyTwoSeconds() {
+        let telemetry = StockpileCaptureSensorSnapshot(
+            sampleCount: 32,
+            motionSignalsIncluded: true,
+            gravityVectorIncluded: true,
+            headingSignalsIncluded: true,
+            cameraCalibrationIncluded: true,
+            motionStable: true,
+            headingStable: true,
+            lidarAssistAvailable: true,
+            trackingState: "world_tracking_normal",
+            sensorMetadata: StockpileCaptureSensorMetadata(
+                depthDataIncluded: true,
+                worldAlignment: "gravityAndHeading"
+            )
+        )
+        let progress = StockpileLiveGuidanceEstimator.estimate(
+            totalSteps: 3,
+            manualCompletedSteps: 0,
+            elapsedRecordingTime: 2,
+            sceneCoverageAccumulator: 1,
+            sceneAnalysis: StockpileCaptureSceneAnalysis(
+                capturedAt: Date(timeIntervalSince1970: 10),
+                referenceCandidateCount: 0,
+                referenceCandidateConfidence: 0,
+                brightnessScore: 0.72,
+                sharpnessScore: 0.76,
+                sceneChangeScore: 0.92,
+                structuredArtifactScore: 0.02,
+                sceneFitConfidence: 0.86,
+                sceneRejectionConfidence: 0.04,
+                pileSegmentationConfidence: 0.9,
+                toeSegmentationConfidence: 0.88,
+                depthConfidence: 0.9,
+                quickVolumeConfidence: 0.86,
+                trackingConfidence: 0.92
+            ),
+            telemetry: telemetry,
+            markerlessCaptureEnabled: true
+        )
+
+        XCTAssertEqual(progress.phase, .capturing)
+        XCTAssertFalse(progress.guidance.isReadyToFinish)
+        XCTAssertEqual(progress.guidance.coverage.level, .blocked)
+        XCTAssertLessThan(progress.guidance.coverage.score, 0.5)
+        XCTAssertEqual(
+            progress.guidance.primaryOperatorAction,
+            "Walk slowly around the pile, keeping the full pile in frame."
+        )
     }
 
     func testDefaultGuidanceStillRequiresReferenceVisibilityBeforeFinish() {
@@ -382,7 +542,7 @@ final class StockpileCameraCaptureTests: XCTestCase {
         XCTAssertEqual(summary.primaryOperatorAction, "Material read is settling. Keep the pile centered.")
     }
 
-    func testMarkerlessGuidanceUsesLidarTrackingInsteadOfTaggedReferences() {
+    func testMarkerlessGuidanceUsesLidarTrackingInsteadOfTaggedReferencesButKeepsWalkingUntilCovered() {
         let progress = StockpileLiveGuidanceEstimator.estimate(
             totalSteps: 3,
             manualCompletedSteps: 1,
@@ -399,7 +559,9 @@ final class StockpileCameraCaptureTests: XCTestCase {
                 sceneFitConfidence: 0.78,
                 sceneRejectionConfidence: 0.12,
                 pileSegmentationConfidence: 0.9,
-                toeSegmentationConfidence: 0.86
+                toeSegmentationConfidence: 0.86,
+                depthConfidence: 0.86,
+                trackingConfidence: 0.9
             ),
             telemetry: StockpileCaptureSensorSnapshot(
                 sampleCount: 32,
@@ -420,7 +582,12 @@ final class StockpileCameraCaptureTests: XCTestCase {
         XCTAssertEqual(progress.guidance.sceneRejection?.level, .good)
         XCTAssertFalse(progress.guidance.primaryOperatorAction.localizedCaseInsensitiveContains("tagged"))
         XCTAssertFalse(progress.guidance.primaryOperatorAction.localizedCaseInsensitiveContains("wrong scene"))
-        XCTAssertTrue(progress.guidance.isReadyToFinish)
+        XCTAssertFalse(progress.guidance.isReadyToFinish)
+        XCTAssertEqual(progress.phase, .capturing)
+        XCTAssertEqual(
+            progress.guidance.primaryOperatorAction,
+            "Keep walking around the pile so the app can see every side."
+        )
     }
 
     func testMarkerRequiredGuidanceStillBlocksWithoutTaggedReferences() {

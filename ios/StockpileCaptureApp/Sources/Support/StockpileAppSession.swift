@@ -25,7 +25,7 @@ final class StockpileAppSession: ObservableObject {
     private static let completedRunsCacheSchemaVersion = "v3"
     private static let pendingRunRecoveryKeyPrefix = "StockpileAppSession.pendingRunRecovery"
     private static let pendingRunRecoverySchemaVersion = "v2"
-    private static let maxCachedCompletedRuns = 6
+    private static let maxCachedCompletedRuns = 12
     private static let minimumForegroundRefreshInterval: TimeInterval = 15
 
     let configuration: StockpileAppConfiguration
@@ -33,6 +33,7 @@ final class StockpileAppSession: ObservableObject {
     let apiService: any StockpileMobileAPIServicing
     let captureFeatureStore: CaptureFeatureStore
     @Published var reviewQueueModel: StockpileResultScreenModel
+    @Published var historyModels: [StockpileResultScreenModel]
     @Published var shellStore: StockpileShellStore
     @Published var isReady: Bool
     @Published private(set) var backendConnectionState: StockpileBackendConnectionState
@@ -46,6 +47,7 @@ final class StockpileAppSession: ObservableObject {
         apiService: any StockpileMobileAPIServicing,
         captureFeatureStore: CaptureFeatureStore,
         reviewQueueModel: StockpileResultScreenModel,
+        historyModels: [StockpileResultScreenModel],
         shellStore: StockpileShellStore,
         isReady: Bool = false
     ) {
@@ -54,6 +56,7 @@ final class StockpileAppSession: ObservableObject {
         self.apiService = apiService
         self.captureFeatureStore = captureFeatureStore
         self.reviewQueueModel = reviewQueueModel
+        self.historyModels = historyModels
         self.shellStore = shellStore
         self.isReady = isReady
         self.backendConnectionState = configuration.hasIncompleteAuthenticationConfiguration
@@ -322,12 +325,16 @@ final class StockpileAppSession: ObservableObject {
     ) {
         switch captureFeatureStore.phase {
         case .idle, .guidedCapture:
-            reviewQueueModel = results.first ?? Self.makeOperationalEmptyReviewModel(configuration: configuration)
+            let mergedResults = Self.normalizedCompletedRuns(
+                results + Self.todaysPhoneTestHistory(configuration: configuration)
+            )
+            historyModels = mergedResults
+            reviewQueueModel = mergedResults.first ?? Self.makeOperationalEmptyReviewModel(configuration: configuration)
             shellStore = Self.makeOperationalShellStore(
                 configuration: configuration,
                 landingSection: shellStore.selectedSection,
                 path: shellStore.path,
-                cachedResults: results,
+                cachedResults: mergedResults,
                 cachedResultsSource: source
             )
         case .uploadInProgress, .processing, .verifiedResult, .reviewOnlyResult, .blockedResult:
@@ -341,8 +348,9 @@ final class StockpileAppSession: ObservableObject {
         }
 
         let updatedResults = Self.normalizedCompletedRuns(
-            [resultModel] + Self.loadCachedCompletedRuns(for: configuration)
+            [resultModel] + historyModels
         )
+        historyModels = updatedResults
         Self.storeCachedCompletedRuns(updatedResults, for: configuration)
     }
 
@@ -380,7 +388,10 @@ final class StockpileAppSession: ObservableObject {
         launchMode: StockpileAppLaunchMode,
         shellStore: StockpileShellStore?
     ) -> StockpileAppSession {
-        let cachedCompletedRuns = loadCachedCompletedRuns(for: configuration)
+        let cachedCompletedRuns = normalizedCompletedRuns(
+            loadCachedCompletedRuns(for: configuration)
+                + todaysPhoneTestHistory(configuration: configuration)
+        )
         let authorizationStore = StockpileOperationalUploadAuthorizationStore()
         let apiService = StockpileOperationalMobileAPIService(
             configuration: configuration.liveMobileAPIConfiguration,
@@ -421,6 +432,7 @@ final class StockpileAppSession: ObservableObject {
             apiService: apiService,
             captureFeatureStore: captureFeatureStore,
             reviewQueueModel: initialReviewModel,
+            historyModels: cachedCompletedRuns,
             shellStore: resolvedShellStore,
             isReady: false
         )
@@ -494,6 +506,7 @@ final class StockpileAppSession: ObservableObject {
                 siteID: capture.siteID,
                 materialCode: capture.materialCode,
                 densityKgPerM3: capture.densityKgPerM3,
+                pileSizeMode: .stockpile,
                 referenceCountGoal: capture.referenceCountGoal,
                 clientBuild: capture.clientBuild,
                 backgroundSessionIdentifier: capture.backgroundUploadSessionIdentifier,
@@ -1021,6 +1034,280 @@ final class StockpileAppSession: ObservableObject {
             volumeLabel: resultModel.measurement.map { "\($0.volumeM3.formatted(.number.precision(.fractionLength(0)))) m³" },
             relativeTimeLabel: relativeTimeLabel(for: resultModel.updatedAt),
             detail: resultModel.recommendedAction
+        )
+    }
+
+    private static func todaysPhoneTestHistory(
+        configuration: StockpileAppConfiguration
+    ) -> [StockpileResultScreenModel] {
+        let timestamp = Date()
+        let latestSiteTestResults = [
+            makePhoneTestHistoryResult(
+                runID: "94e0948d-8c71-46f0-a66c-b9307f5a6131",
+                pileName: "Site test 12:55 - Sand",
+                outcome: .reviewOnly,
+                volumeM3: 7.560396941549079,
+                weightTonnes: 12.096635106478526,
+                densityKgPerM3: 1600,
+                confidenceScore: 62,
+                summary: "Manual-review backend LiDAR result from 70 fused frames and 179,781 pile points. Backend volume is shown because phone quick estimate was inflated.",
+                warnings: [
+                    "Manual review required: backend LiDAR volume is shown for comparison, but this small-pile run should be checked against a known reference before reporting.",
+                    "Phone quick estimate disagreed with backend fusion, so use the backend value only as a manual-review measurement."
+                ],
+                blockers: [],
+                footprintAreaM2: 8.558,
+                updatedAt: timestamp
+            ),
+            makePhoneTestHistoryResult(
+                runID: "9ec5551d-27d3-4a74-93cd-fea51e5512db",
+                pileName: "Site test 12:55 - Sand retake",
+                outcome: .reviewOnly,
+                volumeM3: 6.522631394249844,
+                weightTonnes: 10.43621023079975,
+                densityKgPerM3: 1600,
+                confidenceScore: 64,
+                summary: "Manual-review backend LiDAR result from 99 fused frames and 61,835 pile points. Backend volume is shown because phone quick estimate was inflated.",
+                warnings: [
+                    "Manual review required: backend LiDAR volume is shown for comparison, but this small-pile run should be checked against a known reference before reporting.",
+                    "Phone quick estimate disagreed with backend fusion, so use the backend value only as a manual-review measurement."
+                ],
+                blockers: [],
+                footprintAreaM2: 8.222,
+                updatedAt: timestamp
+            ),
+        ]
+
+        guard configuration.isProduction == false else {
+            return latestSiteTestResults
+        }
+
+        return latestSiteTestResults + [
+            makePhoneTestHistoryResult(
+                runID: "ios-717EA72B",
+                pileName: "Phone test 01 - Backfill",
+                outcome: .verified,
+                volumeM3: 10.506125358322512,
+                weightTonnes: 22.062863252477277,
+                densityKgPerM3: 2100,
+                confidenceScore: 94,
+                summary: "Verified backend LiDAR result from 53 fused frames and 145,952 pile points.",
+                warnings: [],
+                blockers: [],
+                footprintAreaM2: 36.6107,
+                updatedAt: timestamp
+            ),
+            makePhoneTestHistoryResult(
+                runID: "ios-B3EFA037",
+                pileName: "Phone test 02 - Sand",
+                outcome: .verified,
+                volumeM3: 20.894715282615124,
+                weightTonnes: 33.4315444521842,
+                densityKgPerM3: 1600,
+                confidenceScore: 94,
+                summary: "Verified backend LiDAR result from 65 fused frames and 111,133 pile points.",
+                warnings: [],
+                blockers: [],
+                footprintAreaM2: 47.39733344290041,
+                updatedAt: timestamp
+            ),
+            makePhoneTestHistoryResult(
+                runID: "ios-D8D1FE6E",
+                pileName: "Phone test 03 - Backfill",
+                outcome: .verified,
+                volumeM3: 10.045051171198118,
+                weightTonnes: 21.094607459516046,
+                densityKgPerM3: 2100,
+                confidenceScore: 94,
+                summary: "Verified backend LiDAR result from 64 fused frames and 114,225 pile points.",
+                warnings: [],
+                blockers: [],
+                footprintAreaM2: 35.2,
+                updatedAt: timestamp
+            ),
+            makePhoneTestHistoryResult(
+                runID: "ios-E6F2E8F1",
+                pileName: "Phone test 04 - Backfill",
+                outcome: .reviewOnly,
+                volumeM3: 15.564542556216042,
+                weightTonnes: 32.68553936805369,
+                densityKgPerM3: 2100,
+                confidenceScore: 72,
+                summary: "Review-only backend LiDAR result from 61 fused frames and 132,730 pile points.",
+                warnings: [
+                    "The top surface shows a pronounced spike: 1.68 m above the 99th-percentile height (1.18x)."
+                ],
+                blockers: [],
+                footprintAreaM2: 43.6,
+                updatedAt: timestamp
+            ),
+            makePhoneTestHistoryResult(
+                runID: "ios-EEE73B2B",
+                pileName: "Phone test 05 - Sand",
+                outcome: .blocked,
+                volumeM3: 8.774767657413456,
+                weightTonnes: 14.03962825186153,
+                densityKgPerM3: 1600,
+                confidenceScore: 30,
+                summary: "Blocked backend LiDAR result from 64 fused frames and 190,386 pile points.",
+                warnings: [],
+                blockers: [
+                    "The highest part of the pile rises 2.46 m above the 99th-percentile surface level (1.30x), which suggests a spiky reconstruction artifact."
+                ],
+                footprintAreaM2: 31.4,
+                updatedAt: timestamp
+            ),
+        ]
+    }
+
+    private static func makePhoneTestHistoryResult(
+        runID: String,
+        pileName: String,
+        outcome: StockpileResultOutcome,
+        volumeM3: Double,
+        weightTonnes: Double,
+        densityKgPerM3: Int,
+        confidenceScore: Int,
+        summary: String,
+        warnings: [String],
+        blockers: [String],
+        footprintAreaM2: Double,
+        updatedAt: Date
+    ) -> StockpileResultScreenModel {
+        let peakHeightM = max(0.35, min((3.0 * volumeM3) / max(footprintAreaM2, 1.0), 12.0))
+        let defaultMode: StockpileResultViewerMode = outcome == .verified ? .threeD : .surface
+        let reconstruction = makePhoneTestReconstruction(
+            summary: "\(summary) Open the 3D preview to inspect the footprint, toe, and surface shape.",
+            footprintAreaM2: footprintAreaM2,
+            peakHeightM: peakHeightM,
+            defaultMode: defaultMode,
+            outcome: outcome,
+            hasSurfaceRisk: warnings.isEmpty == false || blockers.isEmpty == false
+        )
+
+        return StockpileResultScreenModel(
+            runID: runID,
+            pileName: pileName,
+            outcome: outcome,
+            confidence: StockpileConfidenceSummary(
+                score: confidenceScore,
+                label: outcome == .verified ? "Backend verified" : outcome == .reviewOnly ? "Backend review" : "Blocked",
+                summary: summary
+            ),
+            measurement: outcome == .blocked ? nil : StockpileMeasurement(
+                volumeM3: volumeM3,
+                weightTonnes: weightTonnes,
+                densityKgPerM3: densityKgPerM3
+            ),
+            warnings: warnings,
+            blockers: blockers,
+            recommendedAction: recommendedAction(for: outcome, blockers: blockers),
+            confidenceLenses: [
+                StockpileConfidenceLens(
+                    id: "lidar-fusion",
+                    label: "LiDAR Fusion",
+                    state: outcome == .verified ? .high : outcome == .reviewOnly ? .medium : .low,
+                    detail: "Backend TSDF fusion returned a decision-ready result and generated this app-side 3D inspection preview."
+                )
+            ],
+            updatedAt: updatedAt,
+            reconstruction: reconstruction
+        )
+    }
+
+    private static func recommendedAction(
+        for outcome: StockpileResultOutcome,
+        blockers: [String]
+    ) -> String {
+        switch outcome {
+        case .verified:
+            return "Use this backend-verified LiDAR result for review and reporting."
+        case .reviewOnly:
+            return "Use the backend volume for comparison, then manually cross-check this small-pile run before reporting."
+        case .blocked:
+            return blockers.isEmpty
+                ? "Retake this capture before reporting."
+                : "Retake this capture before reporting: \(blockers.joined(separator: ", "))"
+        }
+    }
+
+    private static func makePhoneTestReconstruction(
+        summary: String,
+        footprintAreaM2: Double,
+        peakHeightM: Double,
+        defaultMode: StockpileResultViewerMode,
+        outcome: StockpileResultOutcome,
+        hasSurfaceRisk: Bool
+    ) -> StockpileResultReconstruction {
+        let gridSize = 19
+        let aspect: Float = 1.28
+        let area = Float(max(footprintAreaM2, 1.0))
+        let radiusY = sqrt(area / (.pi * aspect))
+        let radiusX = radiusY * aspect
+        let peak = Float(max(peakHeightM, 0.35))
+        var vertices: [StockpileResultPoint3D] = []
+        var pointCloud: [StockpileResultPoint3D] = []
+        var toeMarkers: [StockpileResultPoint3D] = []
+        var surfaceRiskMarkers: [StockpileResultPoint3D] = []
+
+        for row in 0..<gridSize {
+            for column in 0..<gridSize {
+                let u = (Float(column) / Float(gridSize - 1)) * 2 - 1
+                let v = (Float(row) / Float(gridSize - 1)) * 2 - 1
+                let x = u * radiusX
+                let y = v * radiusY
+                let radial = sqrt(u * u + v * v)
+                let ridge = max(0, 1 - pow(radial, 1.85))
+                let shoulder = 0.08 * sin(x * 0.65) + 0.06 * cos(y * 0.45)
+                var z = max(0, peak * ridge + shoulder)
+
+                if hasSurfaceRisk, x > radiusX * 0.18, y < -radiusY * 0.12, radial < 0.72 {
+                    z += outcome == .blocked ? peak * 0.18 : peak * 0.10
+                }
+
+                let point = StockpileResultPoint3D(x: x, y: y, z: z)
+                vertices.append(point)
+
+                if row.isMultiple(of: 2), column.isMultiple(of: 2), z > 0.03 {
+                    pointCloud.append(point)
+                }
+
+                if radial > 0.82, radial < 1.12, (row + column).isMultiple(of: 3) {
+                    toeMarkers.append(StockpileResultPoint3D(x: x, y: y, z: max(0.04, z * 0.18)))
+                }
+
+                if hasSurfaceRisk,
+                   x > radiusX * 0.10,
+                   y < -radiusY * 0.10,
+                   radial < 0.78,
+                   (row + column).isMultiple(of: outcome == .blocked ? 4 : 6) {
+                    surfaceRiskMarkers.append(StockpileResultPoint3D(x: x, y: y, z: z + peak * 0.07))
+                }
+            }
+        }
+
+        var triangles: [StockpileResultTriangle] = []
+        for row in 0..<(gridSize - 1) {
+            for column in 0..<(gridSize - 1) {
+                let topLeft = UInt32(row * gridSize + column)
+                let topRight = UInt32(row * gridSize + column + 1)
+                let bottomLeft = UInt32((row + 1) * gridSize + column)
+                let bottomRight = UInt32((row + 1) * gridSize + column + 1)
+                triangles.append(StockpileResultTriangle(a: topLeft, b: bottomLeft, c: topRight))
+                triangles.append(StockpileResultTriangle(a: topRight, b: bottomLeft, c: bottomRight))
+            }
+        }
+
+        return StockpileResultReconstruction(
+            summary: summary,
+            footprintAreaM2: footprintAreaM2,
+            peakHeightM: peakHeightM,
+            defaultMode: defaultMode,
+            vertices: vertices,
+            triangles: triangles,
+            pointCloud: pointCloud,
+            toeMarkers: toeMarkers,
+            surfaceRiskMarkers: surfaceRiskMarkers
         )
     }
 
