@@ -171,6 +171,10 @@ final class StockpileAppSession: ObservableObject {
     }
 
     private func bindCaptureResults() {
+        captureFeatureStore.onCompletedResultApplied = { [weak self] resultModel in
+            self?.persistCompletedRunIfNeeded(resultModel)
+        }
+
         captureFeatureStore.$phase
             .removeDuplicates()
             .sink { [weak self] phase in

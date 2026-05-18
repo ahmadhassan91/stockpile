@@ -975,6 +975,7 @@ final class CaptureFeatureStore: ObservableObject {
     /// Most recent markerless submission receipt (kept after the request lands
     /// so the UI can offer "open processing" affordances).
     @Published private(set) var lastMarkerlessSubmissionReceipt: StockpileCaptureBundleSubmissionReceipt?
+    var onCompletedResultApplied: ((StockpileResultScreenModel) -> Void)?
 
     private let initialConfiguration: CaptureFeatureConfiguration
     private let dependencies: CaptureFeatureDependencies
@@ -1847,6 +1848,7 @@ final class CaptureFeatureStore: ObservableObject {
             configuration.blockedResult = model
             phase = .blockedResult
         }
+        publishCompletedResultToHistoryIfNeeded(model, outcome: payload.outcome)
         CaptureFeatureTrace.log(
             "store.markerlessResult.applied",
             details: "captureID=\(receipt.captureID) resultID=\(result.resultID) outcome=\(payload.outcome)"
@@ -1878,6 +1880,16 @@ final class CaptureFeatureStore: ObservableObject {
             recaptureGuidance: runtimeFailureRecaptureGuidance(message: message)
         )
         phase = .blockedResult
+    }
+
+    private func publishCompletedResultToHistoryIfNeeded(
+        _ resultModel: StockpileResultScreenModel,
+        outcome: StockpileRunOutcome
+    ) {
+        guard outcome == .verified || outcome == .reviewOnly else {
+            return
+        }
+        onCompletedResultApplied?(resultModel)
     }
 
     func resumePendingRunRecovery(_ pendingRun: CaptureFeaturePendingRunRecoveryState) {
@@ -2699,6 +2711,7 @@ final class CaptureFeatureStore: ObservableObject {
                 pendingRunRecoveryState = nil
                 phase = .blockedResult
             }
+            publishCompletedResultToHistoryIfNeeded(resultModel, outcome: result.outcome)
             return
         }
 
