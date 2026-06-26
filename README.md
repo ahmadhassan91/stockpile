@@ -1,5 +1,9 @@
 # Stockpile Weight Estimator
 
+> LEGACY README: this file describes the older cone/COLMAP/Streamlit estimator.
+> It is not the active native iOS + v2 LiDAR backend flow.
+> For the current deployed app/backend architecture, endpoint map, and migration notes, see `docs/CODEBASE_DEPLOYMENT_AND_API_FLOW.md`.
+
 Estimate stockpile volume and weight from a ground-level walkaround video. Place red traffic cones around the pile for scale reference — the pipeline reconstructs a 3D point cloud via COLMAP, calibrates real-world scale from the cones, segments the pile, computes volume, and multiplies by material density.
 
 ## Prerequisites

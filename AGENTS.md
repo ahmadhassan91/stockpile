@@ -25,8 +25,11 @@ This repository is a monorepo. Keep the mobile app and the LiDAR backend treated
 
 ## Do Not Confuse
 
-- `stockpile/` is legacy/shared Python processing code. Do not deploy it as the v2 LiDAR API unless the task explicitly says so.
-- `app/` is not the native iOS app.
+- LEGACY: `stockpile/` is legacy/shared Python processing code for the older cone/COLMAP estimator. Do not deploy it as the v2 LiDAR API unless the task explicitly says so.
+- LEGACY: `app/` is the older Streamlit web UI. It is not the native iOS app, and it is not the v2 LiDAR API.
+- LEGACY DOC: the root `README.md` still describes the older cone/COLMAP/Streamlit flow. For the active app/backend handoff, use `docs/CODEBASE_DEPLOYMENT_AND_API_FLOW.md`.
+- ACTIVE: `ios/` is the native iOS LiDAR capture app.
+- ACTIVE: `stockpile-lidar-backend/` is the v2 LiDAR backend that serves `/api/v2/*`.
 - Local build products live under `build/`, `.build/`, DerivedData, and `ios/build/`; do not commit them.
 
 ## Quick Verification

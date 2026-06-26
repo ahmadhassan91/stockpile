@@ -19,6 +19,32 @@ The live app is configured to use:
 
 The current deployed v2 backend is not COLMAP. It is a FastAPI service that uses iPhone/ARKit LiDAR depth, RGB frames, ARKit poses, Open3D TSDF fusion, ground segmentation, volume calculation, and quality gates.
 
+## Active vs Legacy Map
+
+Use this table before touching code. It is the shortest answer to "what is active and what is legacy?"
+
+| Path or surface | Status | Meaning | Deploy for v2? |
+| --- | --- | --- | --- |
+| `ios/` | ACTIVE | Native iOS LiDAR capture app. Builds `Stockpile Capture` for device/TestFlight. | Yes, app side |
+| `ios/StockpileCaptureApp/` | ACTIVE | Main app shell, capture feature, History tab, runtime config. | Yes, app side |
+| `ios/StockpileCaptureKit/` | ACTIVE | Swift packages for capture, upload, mobile API models, result UI. | Yes, app side |
+| `stockpile-lidar-backend/` | ACTIVE | FastAPI v2 backend for `.stockpilecapture` uploads and LiDAR TSDF processing. | Yes, backend side |
+| `stockpile-lidar-backend/stockpile_lidar/` | ACTIVE | Python package serving `/api/v2/*`. | Yes |
+| `docs/CODEBASE_DEPLOYMENT_AND_API_FLOW.md` | ACTIVE DOC | Current handoff for app/backend/deployment/API flow. | Reference |
+| `AGENTS.md` | ACTIVE DOC | Short agent handoff and root ownership hints. | Reference |
+| `stockpile/` | LEGACY | Older cone/COLMAP/shared Python estimator. Not the v2 LiDAR API. | No |
+| `app/` | LEGACY | Older Streamlit web UI for legacy estimator. Not the native app. | No |
+| root `README.md` | LEGACY DOC | Describes the older video/cone/COLMAP/Streamlit workflow. | No |
+| `/api/v2/*` | ACTIVE | Current markerless LiDAR backend API used by iOS upload/result flow. | Yes |
+| `/api/mobile/*` | LEGACY/TRANSITIONAL | Older mobile API surface still referenced by operational shell/recent-run code. | Not for new v2 processing |
+| public `/` on server | LEGACY | Proxies to Streamlit legacy web app. | No |
+
+Rule of thumb:
+
+- New iOS capture work goes in `ios/`.
+- New backend processing work goes in `stockpile-lidar-backend/`.
+- Do not modify or deploy `stockpile/` or `app/` for v2 LiDAR unless the task explicitly says "legacy COLMAP" or "Streamlit".
+
 ## Problem We Are Solving
 
 The product goal is to measure stockpile volume and weight from field captures using an iPhone LiDAR workflow.
